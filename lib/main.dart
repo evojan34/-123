@@ -4,7 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await AppStorage.loadData(); // تحميل البيانات المحفوظة في الهاتف قبل تشغيل التطبيق
+  await AppStorage.loadData();
   runApp(const LuxuryClinicCashierApp());
 }
 
@@ -132,23 +132,24 @@ class PurchaseRecord {
 class AppStorage {
   static const String _usersKey = 'app_users_data';
   static const String _salesKey = 'app_sales_data';
+  static const String _recoveryKey = 'app_recovery_secret';
 
   static Future<void> loadData() async {
     final prefs = await SharedPreferences.getInstance();
 
-    // 1. استرجاع المستخدمين
     final usersRaw = prefs.getString(_usersKey);
     if (usersRaw != null) {
       final List decoded = jsonDecode(usersRaw);
       AppState.users = decoded.map((item) => AppUser.fromJson(item)).toList();
     }
 
-    // 2. استرجاع المبيعات
     final salesRaw = prefs.getString(_salesKey);
     if (salesRaw != null) {
       final List decoded = jsonDecode(salesRaw);
       AppState.sales = decoded.map((item) => SaleInvoice.fromJson(item)).toList();
     }
+
+    AppState.recoverySecret = prefs.getString(_recoveryKey) ?? "123456";
   }
 
   static Future<void> saveUsers() async {
@@ -162,6 +163,12 @@ class AppStorage {
     final jsonString = jsonEncode(AppState.sales.map((s) => s.toJson()).toList());
     await prefs.setString(_salesKey, jsonString);
   }
+
+  static Future<void> saveRecoverySecret(String secret) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_recoveryKey, secret);
+    AppState.recoverySecret = secret;
+  }
 }
 
 // -------------------------------------------------------------
@@ -174,6 +181,7 @@ class AppState {
 
   static AppUser? currentUser;
   static List<AppUser> users = [];
+  static String recoverySecret = "123456"; // رمز الأمان الاحتياطي الافتراضي
 
   static bool get hasAdmin => users.any((u) => u.role == UserRole.admin);
 
@@ -235,7 +243,7 @@ class LuxuryClinicCashierApp extends StatelessWidget {
 }
 
 // -------------------------------------------------------------
-// شاشة تأسيس حساب المدير العام (مرة واحدة فقط)
+// شاشة تأسيس حساب المدير العام مع رمز الأمان الاحتياطي
 // -------------------------------------------------------------
 class InitialAdminSetupScreen extends StatefulWidget {
   const InitialAdminSetupScreen({super.key});
@@ -249,6 +257,7 @@ class _InitialAdminSetupScreenState extends State<InitialAdminSetupScreen> {
   final TextEditingController _userCtrl = TextEditingController();
   final TextEditingController _passCtrl = TextEditingController();
   final TextEditingController _confirmPassCtrl = TextEditingController();
+  final TextEditingController _recoveryCtrl = TextEditingController();
   String? _error;
 
   void _saveAdmin() async {
@@ -256,9 +265,10 @@ class _InitialAdminSetupScreenState extends State<InitialAdminSetupScreen> {
     final user = _userCtrl.text.trim();
     final pass = _passCtrl.text.trim();
     final confirmPass = _confirmPassCtrl.text.trim();
+    final recovery = _recoveryCtrl.text.trim();
 
-    if (name.isEmpty || user.isEmpty || pass.isEmpty) {
-      setState(() => _error = "يرجى ملء جميع الحقول المطلوبة");
+    if (name.isEmpty || user.isEmpty || pass.isEmpty || recovery.isEmpty) {
+      setState(() => _error = "يرجى ملء جميع الحقول ورمز الأمان للاستعادة");
       return;
     }
 
@@ -277,8 +287,8 @@ class _InitialAdminSetupScreenState extends State<InitialAdminSetupScreen> {
     AppState.users.add(admin);
     AppState.currentUser = admin;
 
-    // حفظ في ذاكرة الهاتف الدائمة فوراً
     await AppStorage.saveUsers();
+    await AppStorage.saveRecoverySecret(recovery);
 
     if (!mounted) return;
     Navigator.pushReplacement(
@@ -316,7 +326,7 @@ class _InitialAdminSetupScreenState extends State<InitialAdminSetupScreen> {
                   style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: LuxuryClinicCashierApp.gold),
                 ),
                 const Text(
-                  'يتم تسجيل المدير مرة واحدة ويحفظ دائماً على الجهاز',
+                  'عيّن بياناتك ورمز الأمان لاستعادة الحساب عند النسيان',
                   style: TextStyle(fontSize: 12, color: Colors.grey),
                   textAlign: TextAlign.center,
                 ),
@@ -341,6 +351,14 @@ class _InitialAdminSetupScreenState extends State<InitialAdminSetupScreen> {
                   controller: _confirmPassCtrl,
                   obscureText: true,
                   decoration: const InputDecoration(labelText: 'تأكيد الرمز السري', prefixIcon: Icon(Icons.lock_outline)),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _recoveryCtrl,
+                  decoration: const InputDecoration(
+                    labelText: 'رمز أمان استعادة الحساب (مثلاً: رقم سري أو كلمة سرية)',
+                    prefixIcon: Icon(Icons.key, color: Colors.amber),
+                  ),
                 ),
                 if (_error != null) ...[
                   const SizedBox(height: 10),
@@ -367,7 +385,7 @@ class _InitialAdminSetupScreenState extends State<InitialAdminSetupScreen> {
 }
 
 // -------------------------------------------------------------
-// شاشة تسجيل الدخول
+// شاشة تسجيل الدخول مع خيار استعادة كلمة المرور
 // -------------------------------------------------------------
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -408,6 +426,111 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
+  // نافذة استعادة كلمة المرور
+  void _openForgotPasswordDialog() {
+    final userCtrl = TextEditingController();
+    final recoveryCtrl = TextEditingController();
+    final newPassCtrl = TextEditingController();
+    String? dialogError;
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDlgState) => Directionality(
+          textDirection: TextDirection.rtl,
+          child: AlertDialog(
+            backgroundColor: LuxuryClinicCashierApp.darkCard,
+            title: const Row(
+              children: [
+                Icon(Icons.lock_reset, color: LuxuryClinicCashierApp.gold),
+                SizedBox(width: 8),
+                Text('استعادة الرمز السري', style: TextStyle(color: LuxuryClinicCashierApp.gold, fontSize: 18)),
+              ],
+            ),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text(
+                    'أدخل اسم المستخدم ورمز الأمان السري الاحتياطي الذي عيّنته عند التأسيس لتعيين رمز سري جديد.',
+                    style: TextStyle(fontSize: 12, color: Colors.grey),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: userCtrl,
+                    decoration: const InputDecoration(labelText: 'اسم المستخدم المطلوب استعادته'),
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: recoveryCtrl,
+                    decoration: const InputDecoration(labelText: 'رمز الأمان الاحتياطي (Master Key)'),
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: newPassCtrl,
+                    obscureText: true,
+                    decoration: const InputDecoration(labelText: 'الرمز السري الجديد'),
+                  ),
+                  if (dialogError != null) ...[
+                    const SizedBox(height: 8),
+                    Text(dialogError!, style: const TextStyle(color: Colors.redAccent, fontSize: 12)),
+                  ],
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('إلغاء', style: TextStyle(color: Colors.grey)),
+              ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: LuxuryClinicCashierApp.gold),
+                onPressed: () async {
+                  final targetUser = userCtrl.text.trim();
+                  final recoveryInput = recoveryCtrl.text.trim();
+                  final newPassword = newPassCtrl.text.trim();
+
+                  final userIndex = AppState.users.indexWhere(
+                    (u) => u.username.toLowerCase() == targetUser.toLowerCase(),
+                  );
+
+                  if (userIndex == -1) {
+                    setDlgState(() => dialogError = "اسم المستخدم غير موجود بالنظام!");
+                    return;
+                  }
+
+                  if (recoveryInput != AppState.recoverySecret) {
+                    setDlgState(() => dialogError = "رمز الأمان الاحتياطي غير صحيح!");
+                    return;
+                  }
+
+                  if (newPassword.isEmpty) {
+                    setDlgState(() => dialogError = "يرجى كتابة رمز سري جديد صالح");
+                    return;
+                  }
+
+                  // تحديث الرمز وحفظه
+                  AppState.users[userIndex].password = newPassword;
+                  await AppStorage.saveUsers();
+
+                  if (!mounted) return;
+                  Navigator.pop(ctx);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('تم تغيير الرمز السري بنجاح! يمكنك الآن تسجيل الدخول.'),
+                      backgroundColor: Colors.green,
+                    ),
+                  );
+                },
+                child: const Text('تأكيد الاستعادة', style: TextStyle(color: Colors.black)),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -443,11 +566,17 @@ class _LoginScreenState extends State<LoginScreen> {
                   obscureText: true,
                   decoration: const InputDecoration(labelText: 'الرمز السري', prefixIcon: Icon(Icons.lock, color: LuxuryClinicCashierApp.gold)),
                 ),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton(
+                    onPressed: _openForgotPasswordDialog,
+                    child: const Text('نسيت كلمة المرور؟', style: TextStyle(color: Colors.grey, fontSize: 12)),
+                  ),
+                ),
                 if (_errorMessage != null) ...[
-                  const SizedBox(height: 10),
                   Text(_errorMessage!, style: const TextStyle(color: Colors.redAccent, fontSize: 13)),
+                  const SizedBox(height: 10),
                 ],
-                const SizedBox(height: 24),
                 ElevatedButton(
                   style: ElevatedButton.styleFrom(
                     backgroundColor: LuxuryClinicCashierApp.gold,
@@ -526,7 +655,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
 }
 
 // -------------------------------------------------------------
-// إدارة المستخدمين (حفظ وتعديل فوري في ذاكرة الجهاز)
+// إدارة المستخدمين (مع خيار تغيير الرمز السري لأي موظف)
 // -------------------------------------------------------------
 class UsersManagementScreen extends StatefulWidget {
   const UsersManagementScreen({super.key});
@@ -550,7 +679,7 @@ class _UsersManagementScreenState extends State<UsersManagementScreen> {
           textDirection: TextDirection.rtl,
           child: AlertDialog(
             backgroundColor: LuxuryClinicCashierApp.darkCard,
-            title: Text(isEditing ? 'تعديل المستخدم' : 'إضافة مستخدم جديد',
+            title: Text(isEditing ? 'تعديل المستخدم وتغيير رمزه' : 'إضافة مستخدم جديد',
                 style: const TextStyle(color: LuxuryClinicCashierApp.gold)),
             content: SingleChildScrollView(
               child: Column(
@@ -611,7 +740,6 @@ class _UsersManagementScreenState extends State<UsersManagementScreen> {
                     }
                   });
 
-                  // حفظ التغييرات في ذاكرة الجهاز فوراً
                   await AppStorage.saveUsers();
                   if (!mounted) return;
                   Navigator.pop(ctx);
@@ -1044,7 +1172,6 @@ class _PosScreenState extends State<PosScreen> {
       AppState.sales.insert(0, newInvoice);
     });
 
-    // حفظ المبيعات الجديدة في ذاكرة الهاتف
     await AppStorage.saveSales();
 
     if (!mounted) return;
