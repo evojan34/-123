@@ -1,6 +1,10 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await AppStorage.loadData(); // تحميل البيانات المحفوظة في الهاتف قبل تشغيل التطبيق
   runApp(const LuxuryClinicCashierApp());
 }
 
@@ -21,12 +25,26 @@ class AppUser {
     required this.fullName,
     required this.role,
   });
+
+  Map<String, dynamic> toJson() => {
+        'username': username,
+        'password': password,
+        'fullName': fullName,
+        'role': role == UserRole.admin ? 'admin' : 'cashier',
+      };
+
+  factory AppUser.fromJson(Map<String, dynamic> json) => AppUser(
+        username: json['username'],
+        password: json['password'],
+        fullName: json['fullName'],
+        role: json['role'] == 'admin' ? UserRole.admin : UserRole.cashier,
+      );
 }
 
 class Product {
   final String id;
   String name;
-  double price; // د.ع
+  double price;
   int stock;
   final int minStock;
   final bool isService;
@@ -68,6 +86,24 @@ class SaleInvoice {
     required this.cashierName,
     required this.cashierUsername,
   });
+
+  Map<String, dynamic> toJson() => {
+        'invoiceNumber': invoiceNumber,
+        'date': date.toIso8601String(),
+        'totalAmount': totalAmount,
+        'cashierName': cashierName,
+        'cashierUsername': cashierUsername,
+        'itemsCount': items.length,
+      };
+
+  factory SaleInvoice.fromJson(Map<String, dynamic> json) => SaleInvoice(
+        invoiceNumber: json['invoiceNumber'],
+        date: DateTime.parse(json['date']),
+        items: [],
+        totalAmount: (json['totalAmount'] as num).toDouble(),
+        cashierName: json['cashierName'],
+        cashierUsername: json['cashierUsername'] ?? 'general',
+      );
 }
 
 class PurchaseRecord {
@@ -90,6 +126,47 @@ class PurchaseRecord {
   double get totalCost => qty * unitCost;
 }
 
+// -------------------------------------------------------------
+// محرك التخزين الدائم (Persistent Storage Engine)
+// -------------------------------------------------------------
+class AppStorage {
+  static const String _usersKey = 'app_users_data';
+  static const String _salesKey = 'app_sales_data';
+
+  static Future<void> loadData() async {
+    final prefs = await SharedPreferences.getInstance();
+
+    // 1. استرجاع المستخدمين
+    final usersRaw = prefs.getString(_usersKey);
+    if (usersRaw != null) {
+      final List decoded = jsonDecode(usersRaw);
+      AppState.users = decoded.map((item) => AppUser.fromJson(item)).toList();
+    }
+
+    // 2. استرجاع المبيعات
+    final salesRaw = prefs.getString(_salesKey);
+    if (salesRaw != null) {
+      final List decoded = jsonDecode(salesRaw);
+      AppState.sales = decoded.map((item) => SaleInvoice.fromJson(item)).toList();
+    }
+  }
+
+  static Future<void> saveUsers() async {
+    final prefs = await SharedPreferences.getInstance();
+    final jsonString = jsonEncode(AppState.users.map((u) => u.toJson()).toList());
+    await prefs.setString(_usersKey, jsonString);
+  }
+
+  static Future<void> saveSales() async {
+    final prefs = await SharedPreferences.getInstance();
+    final jsonString = jsonEncode(AppState.sales.map((s) => s.toJson()).toList());
+    await prefs.setString(_salesKey, jsonString);
+  }
+}
+
+// -------------------------------------------------------------
+// الحالة العامة
+// -------------------------------------------------------------
 class AppState {
   static String storeName = "عيادة ومستلزمات التمريض المتنقلة";
   static String storePhone = "0770 123 4567";
@@ -117,7 +194,7 @@ class AppState {
 }
 
 // -------------------------------------------------------------
-// التطبيق الرئيسي والثيم
+// واجهة التطبيق الرئيسية
 // -------------------------------------------------------------
 class LuxuryClinicCashierApp extends StatelessWidget {
   const LuxuryClinicCashierApp({super.key});
@@ -158,7 +235,7 @@ class LuxuryClinicCashierApp extends StatelessWidget {
 }
 
 // -------------------------------------------------------------
-// شاشة تأسيس حساب المدير العام
+// شاشة تأسيس حساب المدير العام (مرة واحدة فقط)
 // -------------------------------------------------------------
 class InitialAdminSetupScreen extends StatefulWidget {
   const InitialAdminSetupScreen({super.key});
@@ -174,14 +251,14 @@ class _InitialAdminSetupScreenState extends State<InitialAdminSetupScreen> {
   final TextEditingController _confirmPassCtrl = TextEditingController();
   String? _error;
 
-  void _saveAdmin() {
+  void _saveAdmin() async {
     final name = _nameCtrl.text.trim();
     final user = _userCtrl.text.trim();
     final pass = _passCtrl.text.trim();
     final confirmPass = _confirmPassCtrl.text.trim();
 
     if (name.isEmpty || user.isEmpty || pass.isEmpty) {
-      setState(() => _error = "يرجى ملء جميع الحقول");
+      setState(() => _error = "يرجى ملء جميع الحقول المطلوبة");
       return;
     }
 
@@ -200,6 +277,10 @@ class _InitialAdminSetupScreenState extends State<InitialAdminSetupScreen> {
     AppState.users.add(admin);
     AppState.currentUser = admin;
 
+    // حفظ في ذاكرة الهاتف الدائمة فوراً
+    await AppStorage.saveUsers();
+
+    if (!mounted) return;
     Navigator.pushReplacement(
       context,
       MaterialPageRoute(
@@ -235,7 +316,7 @@ class _InitialAdminSetupScreenState extends State<InitialAdminSetupScreen> {
                   style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: LuxuryClinicCashierApp.gold),
                 ),
                 const Text(
-                  'أدخل بياناتك الرئيسية كمدير للنظام للمرة الأولى',
+                  'يتم تسجيل المدير مرة واحدة ويحفظ دائماً على الجهاز',
                   style: TextStyle(fontSize: 12, color: Colors.grey),
                   textAlign: TextAlign.center,
                 ),
@@ -274,7 +355,7 @@ class _InitialAdminSetupScreenState extends State<InitialAdminSetupScreen> {
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                   ),
                   onPressed: _saveAdmin,
-                  child: const Text('حفظ والدخول إلى البرنامج', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                  child: const Text('حفظ دائم والدخول إلى البرنامج', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
                 ),
               ],
             ),
@@ -305,7 +386,7 @@ class _LoginScreenState extends State<LoginScreen> {
     final password = _passCtrl.text.trim();
 
     final matched = AppState.users.firstWhere(
-      (u) => u.username == username && u.password == password,
+      (u) => u.username.toLowerCase() == username.toLowerCase() && u.password == password,
       orElse: () => AppUser(username: "", password: "", fullName: "", role: UserRole.cashier),
     );
 
@@ -350,7 +431,7 @@ class _LoginScreenState extends State<LoginScreen> {
                   'نظام الكاشير التمريضي',
                   style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: LuxuryClinicCashierApp.gold),
                 ),
-                const Text('تسجيل الدخول (المدير أو المستخدمين)', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                const Text('تسجيل الدخول للمدير أو الكاشير', style: TextStyle(fontSize: 12, color: Colors.grey)),
                 const SizedBox(height: 24),
                 TextField(
                   controller: _userCtrl,
@@ -445,7 +526,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
 }
 
 // -------------------------------------------------------------
-// شاشة إدارة المستخدمين
+// إدارة المستخدمين (حفظ وتعديل فوري في ذاكرة الجهاز)
 // -------------------------------------------------------------
 class UsersManagementScreen extends StatefulWidget {
   const UsersManagementScreen({super.key});
@@ -502,7 +583,7 @@ class _UsersManagementScreenState extends State<UsersManagementScreen> {
               TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('إلغاء')),
               ElevatedButton(
                 style: ElevatedButton.styleFrom(backgroundColor: LuxuryClinicCashierApp.gold),
-                onPressed: () {
+                onPressed: () async {
                   final name = nameCtrl.text.trim();
                   final user = userCtrl.text.trim();
                   final pass = passCtrl.text.trim();
@@ -529,6 +610,10 @@ class _UsersManagementScreenState extends State<UsersManagementScreen> {
                       ));
                     }
                   });
+
+                  // حفظ التغييرات في ذاكرة الجهاز فوراً
+                  await AppStorage.saveUsers();
+                  if (!mounted) return;
                   Navigator.pop(ctx);
                 },
                 child: Text(isEditing ? 'حفظ التعديل' : 'إضافة', style: const TextStyle(color: Colors.black)),
@@ -591,8 +676,9 @@ class _UsersManagementScreenState extends State<UsersManagementScreen> {
                   if (!isCurrentUser)
                     IconButton(
                       icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
-                      onPressed: () {
+                      onPressed: () async {
                         setState(() => AppState.users.removeAt(i));
+                        await AppStorage.saveUsers();
                       },
                     ),
                 ],
@@ -748,7 +834,7 @@ class _AdminMonthlyAuditScreenState extends State<AdminMonthlyAuditScreen> {
                               children: [
                                 Text('${s.invoiceNumber} — ${s.cashierName}',
                                     style: const TextStyle(fontWeight: FontWeight.bold)),
-                                Text('التاريخ: ${s.date.year}/${s.date.month}/${s.date.day} - ${s.items.length} مواد',
+                                Text('التاريخ: ${s.date.year}/${s.date.month}/${s.date.day}',
                                     style: const TextStyle(color: Colors.grey, fontSize: 11)),
                               ],
                             ),
@@ -767,7 +853,7 @@ class _AdminMonthlyAuditScreenState extends State<AdminMonthlyAuditScreen> {
 }
 
 // -------------------------------------------------------------
-// جرد شهري خاص بالمستخدم الحالي (تم تصحيح القوس هنا)
+// جرد شهري خاص بالمستخدم الحالي
 // -------------------------------------------------------------
 class UserPersonalAuditScreen extends StatefulWidget {
   const UserPersonalAuditScreen({super.key});
@@ -805,7 +891,7 @@ class _UserPersonalAuditScreenState extends State<UserPersonalAuditScreen> {
               decoration: const InputDecoration(labelText: 'اختر الشهر'),
               items: List.generate(12, (i) => i + 1).map((m) {
                 return DropdownMenuItem(value: m, child: Text('شهر $m / $selectedYear'));
-              }).toList(), // تم تصحيح القوس هنا
+              }).toList(),
               onChanged: (val) => setState(() => selectedMonth = val ?? DateTime.now().month),
             ),
           ),
@@ -872,7 +958,7 @@ class _UserPersonalAuditScreenState extends State<UserPersonalAuditScreen> {
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 Text(s.invoiceNumber, style: const TextStyle(fontWeight: FontWeight.bold)),
-                                Text('التاريخ: ${s.date.year}/${s.date.month}/${s.date.day} (${s.items.length} مواد)',
+                                Text('التاريخ: ${s.date.year}/${s.date.month}/${s.date.day}',
                                     style: const TextStyle(color: Colors.grey, fontSize: 11)),
                               ],
                             ),
@@ -936,7 +1022,7 @@ class _PosScreenState extends State<PosScreen> {
     });
   }
 
-  void _completeSaleAndPrint() {
+  void _completeSaleAndPrint() async {
     if (cart.isEmpty) return;
 
     for (var cartItem in cart) {
@@ -958,6 +1044,10 @@ class _PosScreenState extends State<PosScreen> {
       AppState.sales.insert(0, newInvoice);
     });
 
+    // حفظ المبيعات الجديدة في ذاكرة الهاتف
+    await AppStorage.saveSales();
+
+    if (!mounted) return;
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -1443,17 +1533,6 @@ class ThermalReceiptDialog extends StatelessWidget {
                 child: Text('الكاشير: ${invoice.cashierName}', style: const TextStyle(color: Colors.black, fontSize: 11)),
               ),
               const Divider(color: Colors.black54),
-              ...invoice.items.map((item) => Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 2),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Expanded(child: Text('${item.product.name} (x${item.qty})', style: const TextStyle(color: Colors.black, fontSize: 11))),
-                        Text('${item.subtotal.toInt()} د.ع', style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 11)),
-                      ],
-                    ),
-                  )),
-              const Divider(color: Colors.black87),
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
