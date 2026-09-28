@@ -58,7 +58,7 @@ class SaleInvoice {
   final List<CartItem> items;
   final double totalAmount;
   final String cashierName;
-  final String cashierUsername; // ربط كل عملية بحساب الموظف بدقة
+  final String cashierUsername;
 
   SaleInvoice({
     required this.invoiceNumber,
@@ -90,16 +90,12 @@ class PurchaseRecord {
   double get totalCost => qty * unitCost;
 }
 
-// الحالة العامة والبيانات المشتركة
 class AppState {
   static String storeName = "عيادة ومستلزمات التمريض المتنقلة";
   static String storePhone = "0770 123 4567";
   static String storeAddress = "العراق - خدمة الرعاية الطبية والتمريض المنزلي";
 
-  // المستخدم الحالي المسجل
   static AppUser? currentUser;
-
-  // تبدأ فارغة ليطلب أول دخول إنشاء المدير
   static List<AppUser> users = [];
 
   static bool get hasAdmin => users.any((u) => u.role == UserRole.admin);
@@ -162,7 +158,7 @@ class LuxuryClinicCashierApp extends StatelessWidget {
 }
 
 // -------------------------------------------------------------
-// شاشة تأسيس حساب المدير العام (تظهر فقط عند عدم وجود مدير)
+// شاشة تأسيس حساب المدير العام
 // -------------------------------------------------------------
 class InitialAdminSetupScreen extends StatefulWidget {
   const InitialAdminSetupScreen({super.key});
@@ -391,7 +387,7 @@ class _LoginScreenState extends State<LoginScreen> {
 }
 
 // -------------------------------------------------------------
-// شاشة التنقل الرئيسية (بناء على الصلاحيات)
+// شاشة التنقل الرئيسية
 // -------------------------------------------------------------
 class MainNavigationScreen extends StatefulWidget {
   const MainNavigationScreen({super.key});
@@ -412,7 +408,6 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
       const InventoryScreen(),
       if (isAdmin) const PurchasesScreen(),
       const SalesHistoryScreen(),
-      // جرد شهري للمدير لكافة المستخدمين أو جرد خاص بالكاشير لنفسه
       if (isAdmin) const AdminMonthlyAuditScreen() else const UserPersonalAuditScreen(),
       if (isAdmin) const AnalyticsScreen(),
     ];
@@ -450,7 +445,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
 }
 
 // -------------------------------------------------------------
-// شاشة إضافة وإدارة المستخدمين (من داخل التطبيق خاصة بالمدير)
+// شاشة إدارة المستخدمين
 // -------------------------------------------------------------
 class UsersManagementScreen extends StatefulWidget {
   const UsersManagementScreen({super.key});
@@ -484,7 +479,7 @@ class _UsersManagementScreenState extends State<UsersManagementScreen> {
                   const SizedBox(height: 8),
                   TextField(
                     controller: userCtrl,
-                    enabled: !isEditing, // لا يمكن تغيير اسم الدخول
+                    enabled: !isEditing,
                     decoration: const InputDecoration(labelText: 'اسم الدخول (Username)'),
                   ),
                   const SizedBox(height: 8),
@@ -611,7 +606,7 @@ class _UsersManagementScreenState extends State<UsersManagementScreen> {
 }
 
 // -------------------------------------------------------------
-// الجرد الشهري للمدير (فلترة حسب المستخدم وعرض نسخة لكل موظف)
+// الجرد الشهري للمدير
 // -------------------------------------------------------------
 class AdminMonthlyAuditScreen extends StatefulWidget {
   const AdminMonthlyAuditScreen({super.key});
@@ -623,11 +618,10 @@ class AdminMonthlyAuditScreen extends StatefulWidget {
 class _AdminMonthlyAuditScreenState extends State<AdminMonthlyAuditScreen> {
   int selectedMonth = DateTime.now().month;
   int selectedYear = DateTime.now().year;
-  String? selectedUsername; // null يعني كل المستخدمين
+  String? selectedUsername;
 
   @override
   Widget build(BuildContext context) {
-    // تصفية الفواتير بحسب الشهر والمستخدم المحدد
     final filteredSales = AppState.sales.where((s) {
       final matchDate = s.date.year == selectedYear && s.date.month == selectedMonth;
       if (selectedUsername == null) return matchDate;
@@ -656,7 +650,6 @@ class _AdminMonthlyAuditScreenState extends State<AdminMonthlyAuditScreen> {
       ),
       body: Column(
         children: [
-          // أدوات الفلترة (الشهر والمستخدم)
           Container(
             padding: const EdgeInsets.all(12),
             color: const Color(0xFF16191E),
@@ -691,8 +684,6 @@ class _AdminMonthlyAuditScreenState extends State<AdminMonthlyAuditScreen> {
               ],
             ),
           ),
-
-          // بطاقة ملخص الجرد
           Padding(
             padding: const EdgeInsets.all(12),
             child: Container(
@@ -726,7 +717,6 @@ class _AdminMonthlyAuditScreenState extends State<AdminMonthlyAuditScreen> {
               ),
             ),
           ),
-
           const Padding(
             padding: EdgeInsets.symmetric(horizontal: 14, vertical: 4),
             child: Align(
@@ -734,8 +724,6 @@ class _AdminMonthlyAuditScreenState extends State<AdminMonthlyAuditScreen> {
               child: Text('تفاصيل فواتير الجرد:', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.grey)),
             ),
           ),
-
-          // قائمة الفواتير
           Expanded(
             child: filteredSales.isEmpty
                 ? const Center(child: Text('لا توجد مبيعات مسجلة لهذا التحديد.', style: TextStyle(color: Colors.grey)))
@@ -779,7 +767,7 @@ class _AdminMonthlyAuditScreenState extends State<AdminMonthlyAuditScreen> {
 }
 
 // -------------------------------------------------------------
-// جرد شهري خاص بالمستخدم الحالي لنفسه (الكاشير)
+// جرد شهري خاص بالمستخدم الحالي (تم تصحيح القوس هنا)
 // -------------------------------------------------------------
 class UserPersonalAuditScreen extends StatefulWidget {
   const UserPersonalAuditScreen({super.key});
@@ -796,7 +784,6 @@ class _UserPersonalAuditScreenState extends State<UserPersonalAuditScreen> {
   Widget build(BuildContext context) {
     final currentUsername = AppState.currentUser?.username ?? "";
 
-    // فلترة المبيعات الخاصة بهذا الموظف فقط
     final mySales = AppState.sales.where((s) {
       return s.date.year == selectedYear && s.date.month == selectedMonth && s.cashierUsername == currentUsername;
     }).toList();
@@ -818,7 +805,7 @@ class _UserPersonalAuditScreenState extends State<UserPersonalAuditScreen> {
               decoration: const InputDecoration(labelText: 'اختر الشهر'),
               items: List.generate(12, (i) => i + 1).map((m) {
                 return DropdownMenuItem(value: m, child: Text('شهر $m / $selectedYear'));
-              }).toList>,
+              }).toList(), // تم تصحيح القوس هنا
               onChanged: (val) => setState(() => selectedMonth = val ?? DateTime.now().month),
             ),
           ),
@@ -904,7 +891,7 @@ class _UserPersonalAuditScreenState extends State<UserPersonalAuditScreen> {
 }
 
 // -------------------------------------------------------------
-// شاشة البيع والكاشير (POS)
+// شاشة البيع والكاشير
 // -------------------------------------------------------------
 class PosScreen extends StatefulWidget {
   const PosScreen({super.key});
@@ -1119,8 +1106,6 @@ class _PosScreenState extends State<PosScreen> {
               },
             ),
           ),
-
-          // لوحة السلة السفلية
           Container(
             padding: const EdgeInsets.all(14),
             decoration: const BoxDecoration(
@@ -1353,7 +1338,7 @@ class SalesHistoryScreen extends StatelessWidget {
 }
 
 // -------------------------------------------------------------
-// الإحصائيات العامة (للمدير)
+// الإحصائيات العامة
 // -------------------------------------------------------------
 class AnalyticsScreen extends StatelessWidget {
   const AnalyticsScreen({super.key});
