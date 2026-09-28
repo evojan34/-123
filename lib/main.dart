@@ -11,8 +11,8 @@ enum UserRole { admin, cashier }
 
 class AppUser {
   final String username;
-  final String password;
-  final String fullName;
+  String password;
+  String fullName;
   final UserRole role;
 
   AppUser({
@@ -44,7 +44,7 @@ class Product {
 class CartItem {
   final Product product;
   int qty;
-  double customPrice; // للسماح بتعديل السعر المباشر داخل السلة
+  double customPrice;
 
   CartItem({required this.product, this.qty = 1, double? price})
       : customPrice = price ?? product.price;
@@ -88,21 +88,16 @@ class PurchaseRecord {
   double get totalCost => qty * unitCost;
 }
 
-// الحالة العامة والبيانات المشتركة
+// الحالة العامة المشتركة
 class AppState {
   static String storeName = "عيادة ومستلزمات التمريض المتنقلة";
   static String storePhone = "0770 123 4567";
-  static String storeAddress = "بغداد - خدمة التوصيل والرعاية المنزلية";
+  static String storeAddress = "خدمة التمريض والرعاية المنزلية";
 
-  // المستخدم الحالي المسجل
   static AppUser? currentUser;
 
-  // الحسابات المعتمدة في النظام
-  static List<AppUser> users = [
-    AppUser(username: "admin", password: "123", fullName: "د. علي (المدير العام)", role: UserRole.admin),
-    AppUser(username: "cashier1", password: "123", fullName: "ممرض أحمد (كاشير 1)", role: UserRole.cashier),
-    AppUser(username: "cashier2", password: "123", fullName: "ممرضة فاطمة (كاشير 2)", role: UserRole.cashier),
-  ];
+  // القائمة تبدأ فارغة لتفعيل التأسيس أول مرة من قبل المستخدم
+  static List<AppUser> users = [];
 
   static List<Product> products = [
     Product(id: "1", name: "محلول ملحي معقم (Saline 500ml)", price: 3000, stock: 15, minStock: 5),
@@ -121,7 +116,7 @@ class AppState {
 }
 
 // -------------------------------------------------------------
-// التطبيق الرئيسي والثيم الذهبي الداكن
+// التطبيق الرئيسي والثيم الفاخر
 // -------------------------------------------------------------
 class LuxuryClinicCashierApp extends StatelessWidget {
   const LuxuryClinicCashierApp({super.key});
@@ -155,14 +150,185 @@ class LuxuryClinicCashierApp extends StatelessWidget {
       ),
       home: const Directionality(
         textDirection: TextDirection.rtl,
-        child: LoginScreen(),
+        child: AuthGateScreen(),
       ),
     );
   }
 }
 
 // -------------------------------------------------------------
-// شاشة تسجيل الدخول للحسابات المتعددة
+// شاشة الفحص والتوجيه (Auth Gate)
+// -------------------------------------------------------------
+class AuthGateScreen extends StatelessWidget {
+  const AuthGateScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    // إذا لم يكن هناك أي حساب مسجل، يتم توجيه المستخدم لإنشاء حساب المدير أولاً
+    if (AppState.users.isEmpty) {
+      return const SetupAdminScreen();
+    }
+    return const LoginScreen();
+  }
+}
+
+// -------------------------------------------------------------
+// شاشة أول استخدام: إنشاء حساب المدير العام
+// -------------------------------------------------------------
+class SetupAdminScreen extends StatefulWidget {
+  const SetupAdminScreen({super.key});
+
+  @override
+  State<SetupAdminScreen> createState() => _SetupAdminScreenState();
+}
+
+class _SetupAdminScreenState extends State<SetupAdminScreen> {
+  final _fullNameCtrl = TextEditingController();
+  final _usernameCtrl = TextEditingController();
+  final _passwordCtrl = TextEditingController();
+  final _confirmPassCtrl = TextEditingController();
+  String? _error;
+
+  void _createAdmin() {
+    final name = _fullNameCtrl.text.trim();
+    final username = _usernameCtrl.text.trim();
+    final password = _passwordCtrl.text.trim();
+    final confirm = _confirmPassCtrl.text.trim();
+
+    if (name.isEmpty || username.isEmpty || password.isEmpty) {
+      setState(() => _error = "يرجى ملء جميع الحقول المطلوبة.");
+      return;
+    }
+
+    if (password != confirm) {
+      setState(() => _error = "كلمة المرور وتأكيدها غير متطابقين!");
+      return;
+    }
+
+    final newAdmin = AppUser(
+      fullName: name,
+      username: username,
+      password: password,
+      role: UserRole.admin,
+    );
+
+    setState(() {
+      AppState.users.add(newAdmin);
+      AppState.currentUser = newAdmin;
+    });
+
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(
+        builder: (_) => const Directionality(
+          textDirection: TextDirection.rtl,
+          child: MainNavigationScreen(),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Center(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(24.0),
+          child: Container(
+            constraints: const BoxConstraints(maxWidth: 440),
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              color: LuxuryClinicCashierApp.darkCard,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: LuxuryClinicCashierApp.gold.withOpacity(0.5)),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.admin_panel_settings, size: 55, color: LuxuryClinicCashierApp.gold),
+                const SizedBox(height: 12),
+                const Text(
+                  'تأسيس النظام لأول مرة',
+                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: LuxuryClinicCashierApp.gold),
+                ),
+                const SizedBox(height: 6),
+                const Text(
+                  'يرجى إنشاء حساب المدير الرئيسي والرمز السري للبدء',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 12, color: Colors.grey),
+                ),
+                const SizedBox(height: 24),
+                TextField(
+                  controller: _fullNameCtrl,
+                  decoration: InputDecoration(
+                    labelText: 'الاسم الكامل للمدير',
+                    prefixIcon: const Icon(Icons.badge, color: LuxuryClinicCashierApp.gold),
+                    filled: true,
+                    fillColor: const Color(0xFF14161B),
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _usernameCtrl,
+                  decoration: InputDecoration(
+                    labelText: 'اسم مستخدم المدير (لتسجيل الدخول)',
+                    prefixIcon: const Icon(Icons.person, color: LuxuryClinicCashierApp.gold),
+                    filled: true,
+                    fillColor: const Color(0xFF14161B),
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _passwordCtrl,
+                  obscureText: true,
+                  decoration: InputDecoration(
+                    labelText: 'الرمز السري الجديد',
+                    prefixIcon: const Icon(Icons.lock, color: LuxuryClinicCashierApp.gold),
+                    filled: true,
+                    fillColor: const Color(0xFF14161B),
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _confirmPassCtrl,
+                  obscureText: true,
+                  decoration: InputDecoration(
+                    labelText: 'تأكيد الرمز السري',
+                    prefixIcon: const Icon(Icons.lock_reset, color: LuxuryClinicCashierApp.gold),
+                    filled: true,
+                    fillColor: const Color(0xFF14161B),
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
+                ),
+                if (_error != null) ...[
+                  const SizedBox(height: 10),
+                  Text(_error!, style: const TextStyle(color: Colors.redAccent, fontSize: 13)),
+                ],
+                const SizedBox(height: 24),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: LuxuryClinicCashierApp.gold,
+                    foregroundColor: Colors.black,
+                    minimumSize: const Size.fromHeight(48),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
+                  onPressed: _createAdmin,
+                  child: const Text('حفظ الحساب والدخول للنظام', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// -------------------------------------------------------------
+// شاشة تسجيل الدخول المعتادة
 // -------------------------------------------------------------
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -172,21 +338,18 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
-  final TextEditingController _userCtrl = TextEditingController(text: "admin");
-  final TextEditingController _passCtrl = TextEditingController(text: "123");
+  final TextEditingController _userCtrl = TextEditingController();
+  final TextEditingController _passCtrl = TextEditingController();
   String? _errorMessage;
 
   void _handleLogin() {
     final username = _userCtrl.text.trim();
     final password = _passCtrl.text.trim();
 
-    final matchedUser = AppState.users.firstWhere(
-      (u) => u.username == username && u.password == password,
-      orElse: () => AppUser(username: "", password: "", fullName: "", role: UserRole.cashier),
-    );
+    final matched = AppState.users.where((u) => u.username == username && u.password == password);
 
-    if (matchedUser.username.isNotEmpty) {
-      AppState.currentUser = matchedUser;
+    if (matched.isNotEmpty) {
+      AppState.currentUser = matched.first;
       Navigator.pushReplacement(
         context,
         MaterialPageRoute(
@@ -198,7 +361,7 @@ class _LoginScreenState extends State<LoginScreen> {
       );
     } else {
       setState(() {
-        _errorMessage = "اسم المستخدم أو كلمة المرور غير صحيحة!";
+        _errorMessage = "اسم المستخدم أو الرمز السري غير صحيح!";
       });
     }
   }
@@ -216,13 +379,6 @@ class _LoginScreenState extends State<LoginScreen> {
               color: LuxuryClinicCashierApp.darkCard,
               borderRadius: BorderRadius.circular(16),
               border: Border.all(color: LuxuryClinicCashierApp.darkBorder),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.4),
-                  blurRadius: 15,
-                  offset: const Offset(0, 8),
-                )
-              ],
             ),
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -230,16 +386,11 @@ class _LoginScreenState extends State<LoginScreen> {
                 const Icon(Icons.local_hospital, size: 55, color: LuxuryClinicCashierApp.gold),
                 const SizedBox(height: 12),
                 const Text(
-                  'نظام الكاشير التمريضي المتنقل',
+                  'تسجيل دخول العيادة والكاشير',
                   style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: LuxuryClinicCashierApp.gold),
                   textAlign: TextAlign.center,
                 ),
-                const Text(
-                  'تسجيل دخول الموظفين والكادر الطبي',
-                  style: TextStyle(fontSize: 12, color: Colors.grey),
-                ),
                 const SizedBox(height: 24),
-
                 TextField(
                   controller: _userCtrl,
                   decoration: InputDecoration(
@@ -255,7 +406,7 @@ class _LoginScreenState extends State<LoginScreen> {
                   controller: _passCtrl,
                   obscureText: true,
                   decoration: InputDecoration(
-                    labelText: 'كلمة المرور',
+                    labelText: 'الرمز السري',
                     prefixIcon: const Icon(Icons.lock, color: LuxuryClinicCashierApp.gold),
                     filled: true,
                     fillColor: const Color(0xFF14161B),
@@ -277,13 +428,6 @@ class _LoginScreenState extends State<LoginScreen> {
                   onPressed: _handleLogin,
                   child: const Text('تسجيل الدخول', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
                 ),
-                const SizedBox(height: 20),
-                const Divider(color: LuxuryClinicCashierApp.darkBorder),
-                const Text(
-                  'حسابات للتجربة:\n• المدير: admin / 123\n• كاشير: cashier1 / 123',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: Colors.grey, fontSize: 12),
-                ),
               ],
             ),
           ),
@@ -294,7 +438,139 @@ class _LoginScreenState extends State<LoginScreen> {
 }
 
 // -------------------------------------------------------------
-// شاشة التنقل الرئيسية (Navigation)
+// لوحة إدارة المستخدمين (خاصة بالمدير)
+// -------------------------------------------------------------
+class UsersManagementScreen extends StatefulWidget {
+  const UsersManagementScreen({super.key});
+
+  @override
+  State<UsersManagementScreen> createState() => _UsersManagementScreenState();
+}
+
+class _UsersManagementScreenState extends State<UsersManagementScreen> {
+  void _openAddUserDialog() {
+    final nameCtrl = TextEditingController();
+    final userCtrl = TextEditingController();
+    final passCtrl = TextEditingController();
+    UserRole selectedRole = UserRole.cashier;
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDlgState) => Directionality(
+          textDirection: TextDirection.rtl,
+          child: AlertDialog(
+            backgroundColor: LuxuryClinicCashierApp.darkCard,
+            title: const Text('إضافة مستخدم جديد', style: TextStyle(color: LuxuryClinicCashierApp.gold)),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'الاسم الكامل')),
+                  TextField(controller: userCtrl, decoration: const InputDecoration(labelText: 'اسم المستخدم للدخول')),
+                  TextField(controller: passCtrl, decoration: const InputDecoration(labelText: 'الرمز السري')),
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<UserRole>(
+                    value: selectedRole,
+                    dropdownColor: LuxuryClinicCashierApp.darkCard,
+                    decoration: const InputDecoration(labelText: 'الصلاحية'),
+                    items: const [
+                      DropdownMenuItem(value: UserRole.cashier, child: Text('كاشير (بيع فقط)')),
+                      DropdownMenuItem(value: UserRole.admin, child: Text('مدير (صلاحيات كاملة)')),
+                    ],
+                    onChanged: (val) => setDlgState(() => selectedRole = val ?? UserRole.cashier),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('إلغاء')),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: LuxuryClinicCashierApp.gold),
+                onPressed: () {
+                  final name = nameCtrl.text.trim();
+                  final username = userCtrl.text.trim();
+                  final pass = passCtrl.text.trim();
+
+                  if (name.isNotEmpty && username.isNotEmpty && pass.isNotEmpty) {
+                    setState(() {
+                      AppState.users.add(AppUser(
+                        fullName: name,
+                        username: username,
+                        password: pass,
+                        role: selectedRole,
+                      ));
+                    });
+                    Navigator.pop(ctx);
+                  }
+                },
+                child: const Text('إضافة', style: TextStyle(color: Colors.black)),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('إدارة المستخدمين والموظفين'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.person_add),
+            tooltip: 'إضافة مستخدم',
+            onPressed: _openAddUserDialog,
+          )
+        ],
+      ),
+      body: ListView.separated(
+        padding: const EdgeInsets.all(14),
+        itemCount: AppState.users.length,
+        separatorBuilder: (_, __) => const SizedBox(height: 10),
+        itemBuilder: (ctx, i) {
+          final user = AppState.users[i];
+          final bool isCurrent = AppState.currentUser?.username == user.username;
+
+          return Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: LuxuryClinicCashierApp.darkCard,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: LuxuryClinicCashierApp.darkBorder),
+            ),
+            child: ListTile(
+              leading: CircleAvatar(
+                backgroundColor: user.role == UserRole.admin
+                    ? LuxuryClinicCashierApp.gold
+                    : Colors.blueGrey,
+                child: Icon(
+                  user.role == UserRole.admin ? Icons.shield : Icons.person,
+                  color: Colors.black,
+                ),
+              ),
+              title: Text(user.fullName, style: const TextStyle(fontWeight: FontWeight.bold)),
+              subtitle: Text('المستخدم: ${user.username} | الصلاحية: ${user.role == UserRole.admin ? "مدير" : "كاشير"}'),
+              trailing: isCurrent
+                  ? const Chip(label: Text('حسابك الحالي', style: TextStyle(fontSize: 10)))
+                  : IconButton(
+                      icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
+                      onPressed: () {
+                        setState(() => AppState.users.removeAt(i));
+                      },
+                    ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+// -------------------------------------------------------------
+// شريط التنقل السفلي والصفحات
 // -------------------------------------------------------------
 class MainNavigationScreen extends StatefulWidget {
   const MainNavigationScreen({super.key});
@@ -310,7 +586,6 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
   Widget build(BuildContext context) {
     final isAdmin = AppState.currentUser?.role == UserRole.admin;
 
-    // الصفحات المتاحة بحسب صلاحية الحساب
     final List<Widget> pages = [
       const PosScreen(),
       const InventoryScreen(),
@@ -348,7 +623,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
 }
 
 // -------------------------------------------------------------
-// 1. شاشة الكاشير مع إضافة منتج وتعديل السعر فورياً
+// 1. شاشة الكاشير ونقطة البيع الفورية
 // -------------------------------------------------------------
 class PosScreen extends StatefulWidget {
   const PosScreen({super.key});
@@ -367,7 +642,7 @@ class _PosScreenState extends State<PosScreen> {
     if (!product.isService && product.stock <= 0) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('نفد مخزون "${product.name}"! لا يمكن إتمام البيع.'),
+          content: Text('نفد مخزون "${product.name}"!'),
           backgroundColor: Colors.redAccent,
         ),
       );
@@ -393,7 +668,6 @@ class _PosScreenState extends State<PosScreen> {
     });
   }
 
-  // إضافة منتج جديد مباشرة من واجهة البيع والكاشير
   void _addNewProductDirectly() {
     final nameCtrl = TextEditingController();
     final priceCtrl = TextEditingController();
@@ -407,7 +681,7 @@ class _PosScreenState extends State<PosScreen> {
           textDirection: TextDirection.rtl,
           child: AlertDialog(
             backgroundColor: LuxuryClinicCashierApp.darkCard,
-            title: const Text('إضافة منتج/خدمة سريعة للكاشير', style: TextStyle(color: LuxuryClinicCashierApp.gold)),
+            title: const Text('إضافة منتج/خدمة لواجهة البيع', style: TextStyle(color: LuxuryClinicCashierApp.gold)),
             content: SingleChildScrollView(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -417,13 +691,13 @@ class _PosScreenState extends State<PosScreen> {
                   TextField(controller: priceCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'السعر (د.ع)')),
                   const SizedBox(height: 8),
                   CheckboxListTile(
-                    title: const Text('هل هي خدمة طبية؟ (بدون مخزون)', style: TextStyle(fontSize: 13)),
+                    title: const Text('خدمة طبية؟ (بدون خصم مخزون)', style: TextStyle(fontSize: 13)),
                     value: isService,
                     activeColor: LuxuryClinicCashierApp.gold,
                     onChanged: (val) => setDlgState(() => isService = val ?? false),
                   ),
                   if (!isService)
-                    TextField(controller: stockCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'الكمية في المخزن')),
+                    TextField(controller: stockCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'الكمية الأولية')),
                 ],
               ),
             ),
@@ -446,7 +720,7 @@ class _PosScreenState extends State<PosScreen> {
                     );
                     setState(() {
                       AppState.products.insert(0, newP);
-                      _addToCart(newP); // إضافته للسلة مباشرة للزبون الحالي
+                      _addToCart(newP);
                     });
                     Navigator.pop(ctx);
                   }
@@ -460,7 +734,6 @@ class _PosScreenState extends State<PosScreen> {
     );
   }
 
-  // تعديل سعر المنتج الأصلي
   void _editProductPrice(Product product) {
     final priceCtrl = TextEditingController(text: product.price.toInt().toString());
 
@@ -485,7 +758,6 @@ class _PosScreenState extends State<PosScreen> {
                 if (newPrice != null && newPrice > 0) {
                   setState(() {
                     product.price = newPrice;
-                    // تحديث السعر في السلة أيضاً إذا كان مضافاً
                     for (var item in cart) {
                       if (item.product.id == product.id) item.customPrice = newPrice;
                     }
@@ -501,48 +773,9 @@ class _PosScreenState extends State<PosScreen> {
     );
   }
 
-  // تعديل السعر داخل السلة لعمل خصم خاص بالفاتورة الحالية
-  void _editCartItemPrice(CartItem item) {
-    final priceCtrl = TextEditingController(text: item.customPrice.toInt().toString());
-
-    showDialog(
-      context: context,
-      builder: (ctx) => Directionality(
-        textDirection: TextDirection.rtl,
-        child: AlertDialog(
-          backgroundColor: LuxuryClinicCashierApp.darkCard,
-          title: Text('تعديل السعر في الفاتورة فقط (${item.product.name})',
-              style: const TextStyle(color: LuxuryClinicCashierApp.gold, fontSize: 14)),
-          content: TextField(
-            controller: priceCtrl,
-            keyboardType: TextInputType.number,
-            decoration: const InputDecoration(labelText: 'سعر الوحدة لهذه الفاتورة'),
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('إلغاء')),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(backgroundColor: LuxuryClinicCashierApp.gold),
-              onPressed: () {
-                final newPrice = double.tryParse(priceCtrl.text);
-                if (newPrice != null) {
-                  setState(() {
-                    item.customPrice = newPrice;
-                  });
-                  Navigator.pop(ctx);
-                }
-              },
-              child: const Text('تطبيق', style: TextStyle(color: Colors.black)),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
   void _completeSaleAndPrint() {
     if (cart.isEmpty) return;
 
-    // خصم الكميات من المخزون
     for (var cartItem in cart) {
       if (!cartItem.product.isService) {
         cartItem.product.stock -= cartItem.qty;
@@ -578,6 +811,7 @@ class _PosScreenState extends State<PosScreen> {
     final filtered = AppState.products
         .where((p) => p.name.toLowerCase().contains(searchQuery.toLowerCase()))
         .toList();
+    final isAdmin = AppState.currentUser?.role == UserRole.admin;
 
     return Scaffold(
       appBar: AppBar(
@@ -594,9 +828,20 @@ class _PosScreenState extends State<PosScreen> {
         actions: [
           IconButton(
             icon: const Icon(Icons.add_circle, color: LuxuryClinicCashierApp.gold, size: 28),
-            tooltip: 'إضافة منتج جديد لواجهة البيع',
+            tooltip: 'إضافة منتج لواجهة البيع',
             onPressed: _addNewProductDirectly,
           ),
+          if (isAdmin)
+            IconButton(
+              icon: const Icon(Icons.group, color: Colors.white70),
+              tooltip: 'إدارة المستخدمين',
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const Directionality(textDirection: TextDirection.rtl, child: UsersManagementScreen())),
+                );
+              },
+            ),
           IconButton(
             icon: const Icon(Icons.logout, color: Colors.redAccent),
             tooltip: 'تسجيل الخروج',
@@ -625,8 +870,6 @@ class _PosScreenState extends State<PosScreen> {
               ),
             ),
           ),
-
-          // شبكة المنتجات مع أزرار تعديل الأسعار
           Expanded(
             child: GridView.builder(
               padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -672,7 +915,6 @@ class _PosScreenState extends State<PosScreen> {
                             ),
                             Row(
                               children: [
-                                // زر تعديل السعر المباشر
                                 InkWell(
                                   onTap: () => _editProductPrice(p),
                                   child: const Padding(
@@ -726,8 +968,6 @@ class _PosScreenState extends State<PosScreen> {
               },
             ),
           ),
-
-          // لوحة السلة وإتمام البيع
           Container(
             padding: const EdgeInsets.all(14),
             decoration: const BoxDecoration(
@@ -749,17 +989,7 @@ class _PosScreenState extends State<PosScreen> {
                         return Row(
                           children: [
                             Expanded(
-                              child: Text(
-                                item.product.name,
-                                style: const TextStyle(fontSize: 12),
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                            // زر تعديل السعر للفاتورة فقط
-                            IconButton(
-                              icon: const Icon(Icons.price_change_outlined, size: 16, color: LuxuryClinicCashierApp.gold),
-                              tooltip: 'تعديل السعر لهذه الفاتورة',
-                              onPressed: () => _editCartItemPrice(item),
+                              child: Text(item.product.name, style: const TextStyle(fontSize: 12), overflow: TextOverflow.ellipsis),
                             ),
                             IconButton(
                               icon: const Icon(Icons.remove, size: 16, color: Colors.redAccent),
@@ -855,8 +1085,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
           textDirection: TextDirection.rtl,
           child: AlertDialog(
             backgroundColor: LuxuryClinicCashierApp.darkCard,
-            title: Text(existing == null ? 'إضافة صنف جديد' : 'تعديل الصنف',
-                style: const TextStyle(color: LuxuryClinicCashierApp.gold)),
+            title: Text(existing == null ? 'إضافة صنف جديد' : 'تعديل الصنف', style: const TextStyle(color: LuxuryClinicCashierApp.gold)),
             content: SingleChildScrollView(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -998,7 +1227,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
 }
 
 // -------------------------------------------------------------
-// 3. شاشة المشتريات والموردين
+// 3. شاشة المشتريات
 // -------------------------------------------------------------
 class PurchasesScreen extends StatefulWidget {
   const PurchasesScreen({super.key});
@@ -1024,7 +1253,7 @@ class _PurchasesScreenState extends State<PurchasesScreen> {
           textDirection: TextDirection.rtl,
           child: AlertDialog(
             backgroundColor: LuxuryClinicCashierApp.darkCard,
-            title: const Text('تسجيل فاتورة شراء جديدة', style: TextStyle(color: LuxuryClinicCashierApp.gold)),
+            title: const Text('تسجيل فاتورة شراء', style: TextStyle(color: LuxuryClinicCashierApp.gold)),
             content: SingleChildScrollView(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -1192,7 +1421,7 @@ class SalesHistoryScreen extends StatelessWidget {
 }
 
 // -------------------------------------------------------------
-// 5. شاشة الإحصائيات (خاصة بالمدير)
+// 5. الإحصائيات (خاص بالمدير)
 // -------------------------------------------------------------
 class AnalyticsScreen extends StatelessWidget {
   const AnalyticsScreen({super.key});
@@ -1262,7 +1491,7 @@ class AnalyticsScreen extends StatelessWidget {
 }
 
 // -------------------------------------------------------------
-// حوار وطباعة الفاتورة الحرارية (80mm Thermal Receipt)
+// حوار وطباعة الفاتورة الحرارية 80mm
 // -------------------------------------------------------------
 class ThermalReceiptDialog extends StatelessWidget {
   final SaleInvoice invoice;
@@ -1298,7 +1527,6 @@ class ThermalReceiptDialog extends StatelessWidget {
                 style: const TextStyle(color: Colors.black87, fontSize: 12, fontWeight: FontWeight.bold),
               ),
               const Divider(color: Colors.black87, thickness: 1),
-
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
@@ -1315,43 +1543,30 @@ class ThermalReceiptDialog extends StatelessWidget {
                 ],
               ),
               const Divider(color: Colors.black54, thickness: 0.8),
-
-              // قائمة المواد المباعة
               ...invoice.items.map((item) => Padding(
                     padding: const EdgeInsets.symmetric(vertical: 3),
                     child: Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
                         Expanded(
-                          child: Text(
-                            '${item.product.name} (x${item.qty})',
-                            style: const TextStyle(color: Colors.black, fontSize: 12),
-                          ),
+                          child: Text('${item.product.name} (x${item.qty})', style: const TextStyle(color: Colors.black, fontSize: 12)),
                         ),
-                        Text(
-                          '${item.subtotal.toInt()} د.ع',
-                          style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 12),
-                        ),
+                        Text('${item.subtotal.toInt()} د.ع', style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 12)),
                       ],
                     ),
                   )),
-
               const Divider(color: Colors.black87, thickness: 1),
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   const Text('المجموع الكلي:', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 14)),
-                  Text(
-                    '${invoice.totalAmount.toInt()} د.ع',
-                    style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 16),
-                  ),
+                  Text('${invoice.totalAmount.toInt()} د.ع', style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 16)),
                 ],
               ),
               const SizedBox(height: 12),
               const Text('شكراً لثقتكم بنا — نتمنى لكم دوام الصحة 🌸',
                   textAlign: TextAlign.center, style: TextStyle(color: Colors.black54, fontSize: 11, fontStyle: FontStyle.italic)),
               const SizedBox(height: 16),
-
               Row(
                 children: [
                   Expanded(
@@ -1366,7 +1581,7 @@ class ThermalReceiptDialog extends StatelessWidget {
                         Navigator.pop(context);
                         ScaffoldMessenger.of(context).showSnackBar(
                           const SnackBar(
-                            content: Text('تم إرسال أمر الطباعة إلى الطابعة الحرارية بنجاح 🖨️'),
+                            content: Text('تم إرسال أمر الطباعة إلى الطابعة الحرارية 🖨️'),
                             backgroundColor: Colors.green,
                           ),
                         );
