@@ -1,7 +1,11 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() async {
@@ -54,6 +58,7 @@ class AppUser {
 class Product {
   final String id;
   String name;
+  String barcode; // رقم الباركود
   double price;
   int stock;
   final int minStock;
@@ -63,6 +68,7 @@ class Product {
   Product({
     required this.id,
     required this.name,
+    this.barcode = "",
     required this.price,
     this.stock = 0,
     this.minStock = 5,
@@ -73,6 +79,7 @@ class Product {
   Map<String, dynamic> toJson() => {
         'id': id,
         'name': name,
+        'barcode': barcode,
         'price': price,
         'stock': stock,
         'minStock': minStock,
@@ -83,6 +90,7 @@ class Product {
   factory Product.fromJson(Map<String, dynamic> json) => Product(
         id: json['id'],
         name: json['name'],
+        barcode: json['barcode'] ?? "",
         price: (json['price'] as num).toDouble(),
         stock: json['stock'] ?? 0,
         minStock: json['minStock'] ?? 5,
@@ -121,7 +129,7 @@ class SaleInvoice {
   final double totalAmount;
   final String cashierName;
   final String cashierUsername;
-  bool isReturned; // مؤشر الاسترجاع
+  bool isReturned;
   DateTime? returnDate;
 
   SaleInvoice({
@@ -199,18 +207,163 @@ class PurchaseRecord {
 }
 
 // -------------------------------------------------------------
-// محرك التخزين الدائم
+// شاشة قارئ الباركود بالكاميرا (سريعة ودقيقة)
+// -------------------------------------------------------------
+class BarcodeScannerScreen extends StatefulWidget {
+  final String title;
+  const BarcodeScannerScreen({super.key, this.title = "مسح الباركود"});
+
+  @override
+  State<BarcodeScannerScreen> createState() => _BarcodeScannerScreenState();
+}
+
+class _BarcodeScannerScreenState extends State<BarcodeScannerScreen> {
+  final MobileScannerController _controller = MobileScannerController(
+    detectionSpeed: DetectionSpeed.noDuplicates,
+  );
+  bool _scanned = false;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(widget.title),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.flash_on),
+            onPressed: () => _controller.toggleTorch(),
+          ),
+        ],
+      ),
+      body: Stack(
+        alignment: Alignment.center,
+        children: [
+          MobileScanner(
+            controller: _controller,
+            onDetect: (capture) {
+              if (_scanned) return;
+              final List<Barcode> barcodes = capture.barcodes;
+              for (final barcode in barcodes) {
+                if (barcode.rawValue != null && barcode.rawValue!.isNotEmpty) {
+                  _scanned = true;
+                  Navigator.pop(context, barcode.rawValue);
+                  break;
+                }
+              }
+            },
+          ),
+          // إطار بصري لموقع المسح
+          Container(
+            width: 260,
+            height: 180,
+            decoration: BoxDecoration(
+              border: Border.all(color: LuxuryClinicCashierApp.gold, width: 2.5),
+              borderRadius: BorderRadius.circular(16),
+            ),
+          ),
+          const Positioned(
+            bottom: 40,
+            child: Text(
+              'وجّه الكاميرا نحو باركود المنتج',
+              style: TextStyle(
+                color: Colors.white,
+                backgroundColor: Colors.black54,
+                fontSize: 14,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// -------------------------------------------------------------
+// محرك تحويل الفاتورة لأوامر ESC/POS متوافقة مع Xprinter
+// -------------------------------------------------------------
+class XprinterHelper {
+  static Future<List<int>> convertImageToEscPos(ui.Image image) async {
+    final ByteData? data = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
+    if (data == null) return [];
+
+    final int width = image.width;
+    final int height = image.height;
+    final int widthBytes = (width + 7) ~/ 8;
+    List<int> bytes = [];
+
+    bytes.addAll([0x1B, 0x40]); // تهيئة
+    bytes.addAll([0x1B, 0x61, 0x01]); // محاذاة في المنتصف
+    bytes.addAll([0x1D, 0x76, 0x30, 0x00]); // صورة نقطية
+    bytes.add(widthBytes % 256);
+    bytes.add(widthBytes ~/ 256);
+    bytes.add(height % 256);
+    bytes.add(height ~/ 256);
+
+    for (int y = 0; y < height; y++) {
+      for (int x = 0; x < widthBytes; x++) {
+        int byte = 0;
+        for (int b = 0; b < 8; b++) {
+          int px = x * 8 + b;
+          if (px < width) {
+            int offset = (y * width + px) * 4;
+            int r = data.getUint8(offset);
+            int g = data.getUint8(offset + 1);
+            int bVal = data.getUint8(offset + 2);
+            int a = data.getUint8(offset + 3);
+
+            int gray = (0.299 * r + 0.587 * g + 0.114 * bVal).round();
+            if (a > 128 && gray < 165) {
+              byte |= (1 << (7 - b));
+            }
+          }
+        }
+        bytes.add(byte);
+      }
+    }
+
+    bytes.addAll([0x1B, 0x64, 0x04]); // تغذية ورق
+    bytes.addAll([0x1D, 0x56, 0x42, 0x00]); // قص الورق آلياً
+    return bytes;
+  }
+
+  static Future<bool> printViaNetwork({
+    required String ip,
+    required List<int> bytes,
+    int port = 9100,
+  }) async {
+    try {
+      final socket = await Socket.connect(ip, port, timeout: const Duration(seconds: 4));
+      socket.add(bytes);
+      await socket.flush();
+      await socket.close();
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+}
+
+// -------------------------------------------------------------
+// التخزين الدائم
 // -------------------------------------------------------------
 class AppStorage {
-  static const String _usersKey = 'app_users_v8';
-  static const String _productsKey = 'app_products_v8';
-  static const String _salesKey = 'app_sales_v8';
-  static const String _purchasesKey = 'app_purchases_v8';
-  static const String _recoveryKey = 'app_recovery_v8';
+  static const String _usersKey = 'app_users_v11';
+  static const String _productsKey = 'app_products_v11';
+  static const String _salesKey = 'app_sales_v11';
+  static const String _purchasesKey = 'app_purchases_v11';
+  static const String _recoveryKey = 'app_recovery_v11';
   static const String _storeNameKey = 'app_store_name';
   static const String _storePhoneKey = 'app_store_phone';
   static const String _storeAddressKey = 'app_store_address';
   static const String _receiptFooterKey = 'app_receipt_footer';
+  static const String _printerIpKey = 'app_printer_ip';
 
   static Future<void> loadData() async {
     final prefs = await SharedPreferences.getInstance();
@@ -244,8 +397,9 @@ class AppStorage {
     AppState.recoverySecret = prefs.getString(_recoveryKey) ?? "123456";
     AppState.storeName = prefs.getString(_storeNameKey) ?? "عيادة ومستلزمات التمريض المتنقلة";
     AppState.storePhone = prefs.getString(_storePhoneKey) ?? "0770 123 4567";
-    AppState.storeAddress = prefs.getString(_storeAddressKey) ?? "بغداد - الرعاية السريرية والمنزلية الفائقة";
-    AppState.receiptFooterNote = prefs.getString(_receiptFooterKey) ?? "شكراً لزيارتكم — نتمنى لكم دوام العافية 🌸\nيُرجى الاحتفاظ بالوصل للاسترجاع خلال 48 ساعة";
+    AppState.storeAddress = prefs.getString(_storeAddressKey) ?? "العراق - الرعاية السريرية والمنزلية";
+    AppState.receiptFooterNote = prefs.getString(_receiptFooterKey) ?? "شكراً لزيارتكم — نتمنى لكم دوام الصحة والعافية 🌸";
+    AppState.printerIp = prefs.getString(_printerIpKey) ?? "192.168.1.100";
   }
 
   static Future<void> saveUsers() async {
@@ -279,22 +433,20 @@ class AppStorage {
     required String phone,
     required String address,
     required String footer,
+    required String printerIp,
   }) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_storeNameKey, name);
     await prefs.setString(_storePhoneKey, phone);
     await prefs.setString(_storeAddressKey, address);
     await prefs.setString(_receiptFooterKey, footer);
+    await prefs.setString(_printerIpKey, printerIp);
+
     AppState.storeName = name;
     AppState.storePhone = phone;
     AppState.storeAddress = address;
     AppState.receiptFooterNote = footer;
-  }
-
-  static Future<void> clearAllSalesHistory() async {
-    final prefs = await SharedPreferences.getInstance();
-    AppState.sales.clear();
-    await prefs.remove(_salesKey);
+    AppState.printerIp = printerIp;
   }
 }
 
@@ -304,8 +456,9 @@ class AppStorage {
 class AppState {
   static String storeName = "عيادة ومستلزمات التمريض المتنقلة";
   static String storePhone = "0770 123 4567";
-  static String storeAddress = "بغداد - الرعاية السريرية والمنزلية الفائقة";
-  static String receiptFooterNote = "شكراً لزيارتكم — نتمنى لكم دوام العافية 🌸\nيُرجى الاحتفاظ بالوصل للاسترجاع خلال 48 ساعة";
+  static String storeAddress = "العراق - الرعاية السريرية والمنزلية";
+  static String receiptFooterNote = "شكراً لزيارتكم — نتمنى لكم دوام الصحة والعافية 🌸";
+  static String printerIp = "192.168.1.100";
 
   static AppUser? currentUser;
   static List<AppUser> users = [];
@@ -314,11 +467,11 @@ class AppState {
   static bool get hasAdmin => users.any((u) => u.role == UserRole.admin);
 
   static List<Product> initialProducts = [
-    Product(id: "1", name: "محلول ملحي معقم (Saline 500ml)", price: 3000, stock: 25, minStock: 5),
-    Product(id: "2", name: "كانيولا وريدية قياس 20G وردي", price: 1000, stock: 30, minStock: 10),
-    Product(id: "3", name: "شاش طبي وبلاستر معقم", price: 2500, stock: 20, minStock: 5),
-    Product(id: "4", name: "جهاز ضغط إلكتروني", price: 40000, stock: 5, minStock: 2),
-    Product(id: "5", name: "خدمة: إعطاء مغذي وتثبيت كانيولا", price: 15000, isService: true),
+    Product(id: "1", name: "محلول ملحي معقم (Saline 500ml)", barcode: "6281001", price: 3000, stock: 25, minStock: 5),
+    Product(id: "2", name: "كانيولا وريدية قياس 20G وردي", barcode: "6281002", price: 1000, stock: 30, minStock: 10),
+    Product(id: "3", name: "شاش طبي وبلاستر معقم", barcode: "6281003", price: 2500, stock: 20, minStock: 5),
+    Product(id: "4", name: "جهاز ضغط إلكتروني ذكي", barcode: "6281004", price: 40000, stock: 5, minStock: 2),
+    Product(id: "5", name: "خدمة: إعطاء مغذي وتثبيت كانيولا", barcode: "", price: 15000, isService: true),
   ];
 
   static List<Product> products = [];
@@ -363,7 +516,6 @@ class LuxuryClinicCashierApp extends StatelessWidget {
   }
 }
 
-// ويدجت عرض الصورة
 Widget buildProductImage(Product product, {double size = 45}) {
   if (product.imagePath.isNotEmpty && File(product.imagePath).existsSync()) {
     return Image.file(
@@ -463,7 +615,7 @@ class _InitialAdminSetupScreenState extends State<InitialAdminSetupScreen> {
                 const Icon(Icons.security, size: 60, color: LuxuryClinicCashierApp.gold),
                 const SizedBox(height: 12),
                 const Text('تأسيس حساب المدير العام', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: LuxuryClinicCashierApp.gold)),
-                const Text('قم بتعيين حسابك الرئيسي ورمز استعادة كلمة المرور', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                const Text('عيّن حسابك الرئيسي ورمز الأمان للاستعادة', style: TextStyle(fontSize: 12, color: Colors.grey)),
                 const SizedBox(height: 20),
                 TextField(controller: _nameCtrl, decoration: const InputDecoration(labelText: 'الاسم الكامل للمدير', prefixIcon: Icon(Icons.badge))),
                 const SizedBox(height: 12),
@@ -632,7 +784,14 @@ class _LoginScreenState extends State<LoginScreen> {
                 const SizedBox(height: 24),
                 TextField(controller: _userCtrl, decoration: const InputDecoration(labelText: 'اسم المستخدم', prefixIcon: Icon(Icons.person, color: LuxuryClinicCashierApp.gold))),
                 const SizedBox(height: 14),
-                TextField(controller: _passCtrl, obscureText: true, decoration: const InputDecoration(labelText: 'الرمز السري', prefixIcon: Icon(Icons.lock, color: LuxuryClinicCashierApp.gold))),
+                TextField(
+                  controller: _passCtrl,
+                  obscureText: true,
+                  decoration: const InputDecoration(
+                    labelText: 'الرمز السري',
+                    prefixIcon: Icon(Icons.lock, color: LuxuryClinicCashierApp.gold),
+                  ),
+                ),
                 Align(
                   alignment: Alignment.centerLeft,
                   child: TextButton(
@@ -664,7 +823,7 @@ class _LoginScreenState extends State<LoginScreen> {
 }
 
 // -------------------------------------------------------------
-// شاشة الضبط والخيارات المتقدمة والملف الشخصي
+// شاشة الضبط وإعدادات العيادة
 // -------------------------------------------------------------
 class ProfileSettingsScreen extends StatefulWidget {
   const ProfileSettingsScreen({super.key});
@@ -683,6 +842,7 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
   late TextEditingController _clinicPhoneCtrl;
   late TextEditingController _clinicAddressCtrl;
   late TextEditingController _footerNoteCtrl;
+  late TextEditingController _printerIpCtrl;
 
   @override
   void initState() {
@@ -697,9 +857,10 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
     _clinicPhoneCtrl = TextEditingController(text: AppState.storePhone);
     _clinicAddressCtrl = TextEditingController(text: AppState.storeAddress);
     _footerNoteCtrl = TextEditingController(text: AppState.receiptFooterNote);
+    _printerIpCtrl = TextEditingController(text: AppState.printerIp);
   }
 
-  void _saveAllSettings() async {
+  void _saveSettings() async {
     final user = AppState.currentUser;
     if (user != null) {
       user.fullName = _fullNameCtrl.text.trim();
@@ -717,57 +878,39 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
         phone: _clinicPhoneCtrl.text.trim(),
         address: _clinicAddressCtrl.text.trim(),
         footer: _footerNoteCtrl.text.trim(),
+        printerIp: _printerIpCtrl.text.trim(),
       );
     }
 
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('تم حفظ كافة الإعدادات والبيانات بنجاح!'), backgroundColor: Colors.green),
+      const SnackBar(content: Text('تم حفظ الإعدادات وعنوان الطابعة بنجاح!'), backgroundColor: Colors.green),
     );
     setState(() {});
   }
 
-  // تصفير فواتير المبيعات التجريبية (ميزة ينصح بها للبدء الرسمي)
-  void _clearTestSalesDialog() {
-    final passCtrl = TextEditingController();
-    showDialog(
-      context: context,
-      builder: (ctx) => Directionality(
-        textDirection: TextDirection.rtl,
-        child: AlertDialog(
-          backgroundColor: LuxuryClinicCashierApp.darkCard,
-          title: const Text('تصفير سجل المبيعات التجريبية', style: TextStyle(color: Colors.redAccent)),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
+  Widget _buildSection({required String title, required IconData icon, required List<Widget> children}) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 16),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: LuxuryClinicCashierApp.darkCard,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: LuxuryClinicCashierApp.darkBorder),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
             children: [
-              const Text('هل تريد حذف جميع فواتير البيع المسجلة للبدء من الصفر؟ أدخل رمز الأمان لتأكيد ذلك:'),
-              const SizedBox(height: 10),
-              TextField(controller: passCtrl, obscureText: true, decoration: const InputDecoration(labelText: 'رمز الأمان الاحتياطي')),
+              Icon(icon, color: LuxuryClinicCashierApp.gold, size: 22),
+              const SizedBox(width: 8),
+              Text(title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: LuxuryClinicCashierApp.gold)),
             ],
           ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('إلغاء')),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
-              onPressed: () async {
-                if (passCtrl.text.trim() == AppState.recoverySecret) {
-                  await AppStorage.clearAllSalesHistory();
-                  if (!mounted) return;
-                  Navigator.pop(ctx);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('تم تفريغ سجل المبيعات بنجاح!'), backgroundColor: Colors.green),
-                  );
-                  setState(() {});
-                } else {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('رمز الأمان غير صحيح!'), backgroundColor: Colors.redAccent),
-                  );
-                }
-              },
-              child: const Text('تأكيد الحذف'),
-            ),
-          ],
-        ),
+          const Divider(height: 20, color: LuxuryClinicCashierApp.darkBorder),
+          ...children,
+        ],
       ),
     );
   }
@@ -780,81 +923,54 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
     return Scaffold(
       appBar: AppBar(title: const Text('الضبط والخيارات والملف الشخصي')),
       body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.all(14),
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // بطاقة المستخدم
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: LuxuryClinicCashierApp.darkCard,
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: LuxuryClinicCashierApp.gold),
-              ),
-              child: Row(
+            _buildSection(
+              title: 'الملف الشخصي والحساب',
+              icon: Icons.person_pin,
+              children: [
+                TextField(controller: _fullNameCtrl, decoration: const InputDecoration(labelText: 'الاسم الكامل للمستخدم', prefixIcon: Icon(Icons.badge))),
+                const SizedBox(height: 10),
+                TextField(controller: _phoneCtrl, keyboardType: TextInputType.phone, decoration: const InputDecoration(labelText: 'رقم الهاتف الشخصي', prefixIcon: Icon(Icons.phone))),
+                const SizedBox(height: 10),
+                TextField(controller: _addressCtrl, decoration: const InputDecoration(labelText: 'عنوان السكن الشخصي', prefixIcon: Icon(Icons.home))),
+                const SizedBox(height: 10),
+                TextField(controller: _passwordCtrl, decoration: const InputDecoration(labelText: 'الرمز السري للدخول', prefixIcon: Icon(Icons.lock))),
+              ],
+            ),
+            if (isAdmin) ...[
+              _buildSection(
+                title: 'هوية وبيانات العيادة (رأس الفاتورة)',
+                icon: Icons.local_hospital,
                 children: [
-                  CircleAvatar(
-                    radius: 28,
-                    backgroundColor: LuxuryClinicCashierApp.gold.withOpacity(0.2),
-                    child: Icon(isAdmin ? Icons.admin_panel_settings : Icons.person, color: LuxuryClinicCashierApp.gold, size: 32),
-                  ),
-                  const SizedBox(width: 14),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(user?.fullName ?? '', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                        Text('اسم المستخدم: ${user?.username} | الرتبة: ${isAdmin ? "مدير عام" : "كاشير"}', style: const TextStyle(color: Colors.grey, fontSize: 12)),
-                      ],
-                    ),
-                  ),
+                  TextField(controller: _clinicNameCtrl, decoration: const InputDecoration(labelText: 'اسم العيادة المطبوع على الفاتورة', prefixIcon: Icon(Icons.badge))),
+                  const SizedBox(height: 10),
+                  TextField(controller: _clinicPhoneCtrl, keyboardType: TextInputType.phone, decoration: const InputDecoration(labelText: 'هاتف العيادة للزبائن', prefixIcon: Icon(Icons.call))),
+                  const SizedBox(height: 10),
+                  TextField(controller: _clinicAddressCtrl, decoration: const InputDecoration(labelText: 'العنوان الجغرافي المطبوع', prefixIcon: Icon(Icons.map))),
+                  const SizedBox(height: 10),
+                  TextField(controller: _footerNoteCtrl, maxLines: 2, decoration: const InputDecoration(labelText: 'ملاحظة أسفل الفاتورة (شروط الاسترجاع والنصائح)', prefixIcon: Icon(Icons.notes))),
                 ],
               ),
-            ),
-            const SizedBox(height: 20),
-
-            const Text('بيانات المستخدم الشخصية:', style: TextStyle(fontWeight: FontWeight.bold, color: LuxuryClinicCashierApp.gold, fontSize: 15)),
-            const SizedBox(height: 10),
-            TextField(controller: _fullNameCtrl, decoration: const InputDecoration(labelText: 'الاسم الكامل', prefixIcon: Icon(Icons.badge))),
-            const SizedBox(height: 10),
-            TextField(controller: _phoneCtrl, keyboardType: TextInputType.phone, decoration: const InputDecoration(labelText: 'رقم الهاتف الخاص بك', prefixIcon: Icon(Icons.phone))),
-            const SizedBox(height: 10),
-            TextField(controller: _addressCtrl, decoration: const InputDecoration(labelText: 'عنوان سكنك', prefixIcon: Icon(Icons.location_on))),
-            const SizedBox(height: 10),
-            TextField(controller: _passwordCtrl, decoration: const InputDecoration(labelText: 'الرمز السري للحساب', prefixIcon: Icon(Icons.lock))),
-
-            if (isAdmin) ...[
-              const SizedBox(height: 24),
-              const Divider(color: LuxuryClinicCashierApp.darkBorder),
-              const Text('إعدادات الفاتورة والعيادة المطبوعة (خيارات ننصح بها):', style: TextStyle(fontWeight: FontWeight.bold, color: LuxuryClinicCashierApp.gold, fontSize: 15)),
-              const SizedBox(height: 6),
-              const Text('هذه المعلومات تطبع تلقائياً على كل وصل يستلمه المريض أو الزبون:', style: TextStyle(color: Colors.grey, fontSize: 11)),
-              const SizedBox(height: 10),
-              TextField(controller: _clinicNameCtrl, decoration: const InputDecoration(labelText: 'اسم العيادة الرئيسي المطبوع', prefixIcon: Icon(Icons.local_hospital))),
-              const SizedBox(height: 10),
-              TextField(controller: _clinicPhoneCtrl, keyboardType: TextInputType.phone, decoration: const InputDecoration(labelText: 'هاتف العيادة المطبوع على الوصل', prefixIcon: Icon(Icons.call))),
-              const SizedBox(height: 10),
-              TextField(controller: _clinicAddressCtrl, decoration: const InputDecoration(labelText: 'عنوان وموقع العيادة المطبوع', prefixIcon: Icon(Icons.map))),
-              const SizedBox(height: 10),
-              TextField(
-                controller: _footerNoteCtrl,
-                maxLines: 2,
-                decoration: const InputDecoration(labelText: 'ملاحظة أسفل الفاتورة (شروط الاسترجاع والنصائح الطبية)', prefixIcon: Icon(Icons.notes)),
-              ),
-              const SizedBox(height: 18),
-              OutlinedButton.icon(
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: Colors.redAccent,
-                  side: const BorderSide(color: Colors.redAccent),
-                  minimumSize: const Size.fromHeight(45),
-                ),
-                icon: const Icon(Icons.delete_sweep),
-                label: const Text('تصفير سجل المبيعات والفواتير السابقة'),
-                onPressed: _clearTestSalesDialog,
+              _buildSection(
+                title: 'إعدادات طابعة الإيصالات (Xprinter 80mm)',
+                icon: Icons.print,
+                children: [
+                  TextField(
+                    controller: _printerIpCtrl,
+                    keyboardType: TextInputType.datetime,
+                    decoration: const InputDecoration(
+                      labelText: 'عنوان IP الخاص بالطابعة في الشبكة (LAN IP)',
+                      hintText: '192.168.1.100',
+                      prefixIcon: Icon(Icons.lan, color: LuxuryClinicCashierApp.gold),
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  const Text('اربط طابعة Xprinter بكيبل الشبكة بالراوتر، ثم اكتب الآيبي الخاص بها هنا ليتم إرسال الفواتير وقص الورق فورياً.', style: TextStyle(fontSize: 11, color: Colors.grey)),
+                ],
               ),
             ],
-            const SizedBox(height: 24),
             ElevatedButton.icon(
               style: ElevatedButton.styleFrom(
                 backgroundColor: LuxuryClinicCashierApp.gold,
@@ -863,8 +979,8 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
               ),
               icon: const Icon(Icons.save),
-              label: const Text('حفظ جميع الإعدادات والخيارات', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
-              onPressed: _saveAllSettings,
+              label: const Text('حفظ الإعدادات', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+              onPressed: _saveSettings,
             ),
           ],
         ),
@@ -874,7 +990,7 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
 }
 
 // -------------------------------------------------------------
-// شاشة التنقل الرئيسية (5 أقسام كاملة)
+// شاشة التنقل الرئيسية (5 أقسام)
 // -------------------------------------------------------------
 class MainNavigationScreen extends StatefulWidget {
   const MainNavigationScreen({super.key});
@@ -930,7 +1046,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
 }
 
 // -------------------------------------------------------------
-// 1. شاشة البيع والكاشير مع حذف السلة وخيار إلغاء البيع
+// 1. شاشة البيع والكاشير (مع ميزة البيع المباشر بالباركود)
 // -------------------------------------------------------------
 class PosScreen extends StatefulWidget {
   const PosScreen({super.key});
@@ -970,7 +1086,57 @@ class _PosScreenState extends State<PosScreen> {
     });
   }
 
-  // حذف السلة بالكامل للخطأ أو بيع سهواً
+  // مسح باركود المنتج لإضافته فوراً للسلة
+  void _scanBarcodeForSale() async {
+    final scannedBarcode = await Navigator.push<String>(
+      context,
+      MaterialPageRoute(builder: (_) => const BarcodeScannerScreen(title: "مسح باركود المادة للبيع")),
+    );
+
+    if (scannedBarcode == null || scannedBarcode.isEmpty) return;
+
+    final matchedIndex = AppState.products.indexWhere(
+      (p) => p.barcode.trim() == scannedBarcode.trim(),
+    );
+
+    if (matchedIndex != -1) {
+      final matchedProduct = AppState.products[matchedIndex];
+      _addToCart(matchedProduct);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('تمت إضافة: ${matchedProduct.name} (${matchedProduct.price.toInt()} د.ع)'),
+          backgroundColor: Colors.green,
+          duration: const Duration(seconds: 1),
+        ),
+      );
+    } else {
+      if (!mounted) return;
+      showDialog(
+        context: context,
+        builder: (ctx) => Directionality(
+          textDirection: TextDirection.rtl,
+          child: AlertDialog(
+            backgroundColor: LuxuryClinicCashierApp.darkCard,
+            title: const Text('باركود غير مسجل', style: TextStyle(color: LuxuryClinicCashierApp.gold)),
+            content: Text('الباركود ($scannedBarcode) غير مسجل في المخزن. هل ترغب بإضافته كمنتج جديد الآن؟'),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('إلغاء')),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: LuxuryClinicCashierApp.gold, foregroundColor: Colors.black),
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  _addNewProductDirectly(prefilledBarcode: scannedBarcode);
+                },
+                child: const Text('إضافة المنتج الآن'),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+  }
+
   void _clearCartDialog() {
     if (cart.isEmpty) return;
     showDialog(
@@ -979,8 +1145,8 @@ class _PosScreenState extends State<PosScreen> {
         textDirection: TextDirection.rtl,
         child: AlertDialog(
           backgroundColor: LuxuryClinicCashierApp.darkCard,
-          title: const Text('تفريغ وإلغاء السلة', style: TextStyle(color: Colors.redAccent)),
-          content: const Text('هل أنت متأكد من حذف جميع المواد المضافة في السلة للبدء من جديد؟'),
+          title: const Text('تفريغ السلة', style: TextStyle(color: Colors.redAccent)),
+          content: const Text('هل تريد حذف جميع المواد من السلة والبدء من جديد؟'),
           actions: [
             TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('تراجع')),
             ElevatedButton(
@@ -988,11 +1154,9 @@ class _PosScreenState extends State<PosScreen> {
               onPressed: () {
                 setState(() => cart.clear());
                 Navigator.pop(ctx);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('تم تفريغ السلة بنجاح')),
-                );
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تم تفريغ السلة')));
               },
-              child: const Text('نعم، إفراغ السلة'),
+              child: const Text('تفريغ'),
             ),
           ],
         ),
@@ -1009,12 +1173,12 @@ class _PosScreenState extends State<PosScreen> {
           children: [
             ListTile(
               leading: const Icon(Icons.photo_library, color: LuxuryClinicCashierApp.gold),
-              title: const Text('اختيار من معرض صور الهاتف'),
+              title: const Text('معرض صور الهاتف'),
               onTap: () => Navigator.pop(context, ImageSource.gallery),
             ),
             ListTile(
               leading: const Icon(Icons.camera_alt, color: LuxuryClinicCashierApp.gold),
-              title: const Text('التقاط صورة بالكاميرا الآن'),
+              title: const Text('الكاميرا'),
               onTap: () => Navigator.pop(context, ImageSource.camera),
             ),
           ],
@@ -1029,8 +1193,9 @@ class _PosScreenState extends State<PosScreen> {
     return null;
   }
 
-  void _addNewProductDirectly() {
+  void _addNewProductDirectly({String prefilledBarcode = ""}) {
     final nameCtrl = TextEditingController();
+    final barcodeCtrl = TextEditingController(text: prefilledBarcode);
     final priceCtrl = TextEditingController();
     final stockCtrl = TextEditingController(text: "10");
     String pickedImagePath = "";
@@ -1051,9 +1216,7 @@ class _PosScreenState extends State<PosScreen> {
                   InkWell(
                     onTap: () async {
                       final path = await _pickImageSource(ctx);
-                      if (path != null) {
-                        setDlg(() => pickedImagePath = path);
-                      }
+                      if (path != null) setDlg(() => pickedImagePath = path);
                     },
                     borderRadius: BorderRadius.circular(12),
                     child: Container(
@@ -1065,22 +1228,38 @@ class _PosScreenState extends State<PosScreen> {
                         border: Border.all(color: LuxuryClinicCashierApp.gold),
                       ),
                       child: pickedImagePath.isNotEmpty
-                          ? ClipRRect(
-                              borderRadius: BorderRadius.circular(12),
-                              child: Image.file(File(pickedImagePath), fit: BoxFit.cover),
-                            )
+                          ? ClipRRect(borderRadius: BorderRadius.circular(12), child: Image.file(File(pickedImagePath), fit: BoxFit.cover))
                           : const Column(
                               mainAxisAlignment: MainAxisAlignment.center,
                               children: [
                                 Icon(Icons.add_a_photo, color: LuxuryClinicCashierApp.gold, size: 32),
                                 SizedBox(height: 4),
-                                Text('اضغط لاختيار صورة من هاتفك', style: TextStyle(color: Colors.grey, fontSize: 11)),
+                                Text('اختيار صورة من الهاتف', style: TextStyle(color: Colors.grey, fontSize: 11)),
                               ],
                             ),
                     ),
                   ),
                   const SizedBox(height: 10),
                   TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'اسم المادة أو الخدمة')),
+                  const SizedBox(height: 8),
+                  // خانة الباركود مع زر المسح بالكاميرا
+                  TextField(
+                    controller: barcodeCtrl,
+                    decoration: InputDecoration(
+                      labelText: 'رقم الباركود',
+                      suffixIcon: IconButton(
+                        icon: const Icon(Icons.qr_code_scanner, color: LuxuryClinicCashierApp.gold),
+                        tooltip: 'مسح الباركود بالكاميرا',
+                        onPressed: () async {
+                          final code = await Navigator.push<String>(
+                            context,
+                            MaterialPageRoute(builder: (_) => const BarcodeScannerScreen(title: "مسح باركود المادة")),
+                          );
+                          if (code != null) setDlg(() => barcodeCtrl.text = code);
+                        },
+                      ),
+                    ),
+                  ),
                   const SizedBox(height: 8),
                   TextField(controller: priceCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'السعر (د.ع)')),
                   const SizedBox(height: 8),
@@ -1101,6 +1280,7 @@ class _PosScreenState extends State<PosScreen> {
                 style: ElevatedButton.styleFrom(backgroundColor: LuxuryClinicCashierApp.gold, foregroundColor: Colors.black),
                 onPressed: () async {
                   final name = nameCtrl.text.trim();
+                  final barcode = barcodeCtrl.text.trim();
                   final price = double.tryParse(priceCtrl.text) ?? 0.0;
                   final stock = int.tryParse(stockCtrl.text) ?? 0;
 
@@ -1108,6 +1288,7 @@ class _PosScreenState extends State<PosScreen> {
                     final newProduct = Product(
                       id: DateTime.now().millisecondsSinceEpoch.toString(),
                       name: name,
+                      barcode: barcode,
                       price: price,
                       stock: stock,
                       isService: isService,
@@ -1135,6 +1316,7 @@ class _PosScreenState extends State<PosScreen> {
 
   void _editProduct(Product product) {
     final priceCtrl = TextEditingController(text: product.price.toInt().toString());
+    final barcodeCtrl = TextEditingController(text: product.barcode);
     String currentImagePath = product.imagePath;
 
     showDialog(
@@ -1144,7 +1326,7 @@ class _PosScreenState extends State<PosScreen> {
           textDirection: TextDirection.rtl,
           child: AlertDialog(
             backgroundColor: LuxuryClinicCashierApp.darkCard,
-            title: Text('تعديل سعر وصورة: ${product.name}', style: const TextStyle(color: LuxuryClinicCashierApp.gold, fontSize: 15)),
+            title: Text('تعديل سعر وبيانات: ${product.name}', style: const TextStyle(color: LuxuryClinicCashierApp.gold, fontSize: 15)),
             content: SingleChildScrollView(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -1152,9 +1334,7 @@ class _PosScreenState extends State<PosScreen> {
                   InkWell(
                     onTap: () async {
                       final path = await _pickImageSource(ctx);
-                      if (path != null) {
-                        setDlg(() => currentImagePath = path);
-                      }
+                      if (path != null) setDlg(() => currentImagePath = path);
                     },
                     child: Container(
                       height: 100,
@@ -1165,10 +1345,7 @@ class _PosScreenState extends State<PosScreen> {
                         border: Border.all(color: LuxuryClinicCashierApp.gold),
                       ),
                       child: currentImagePath.isNotEmpty && File(currentImagePath).existsSync()
-                          ? ClipRRect(
-                              borderRadius: BorderRadius.circular(10),
-                              child: Image.file(File(currentImagePath), fit: BoxFit.cover),
-                            )
+                          ? ClipRRect(borderRadius: BorderRadius.circular(10), child: Image.file(File(currentImagePath), fit: BoxFit.cover))
                           : const Column(
                               mainAxisAlignment: MainAxisAlignment.center,
                               children: [
@@ -1179,6 +1356,23 @@ class _PosScreenState extends State<PosScreen> {
                     ),
                   ),
                   const SizedBox(height: 12),
+                  TextField(
+                    controller: barcodeCtrl,
+                    decoration: InputDecoration(
+                      labelText: 'رقم الباركود',
+                      suffixIcon: IconButton(
+                        icon: const Icon(Icons.qr_code_scanner, color: LuxuryClinicCashierApp.gold),
+                        onPressed: () async {
+                          final code = await Navigator.push<String>(
+                            context,
+                            MaterialPageRoute(builder: (_) => const BarcodeScannerScreen(title: "تحديث الباركود")),
+                          );
+                          if (code != null) setDlg(() => barcodeCtrl.text = code);
+                        },
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
                   TextField(
                     controller: priceCtrl,
                     keyboardType: TextInputType.number,
@@ -1196,11 +1390,10 @@ class _PosScreenState extends State<PosScreen> {
                   if (newPrice != null && newPrice > 0) {
                     setState(() {
                       product.price = newPrice;
+                      product.barcode = barcodeCtrl.text.trim();
                       product.imagePath = currentImagePath;
                       for (var item in cart) {
-                        if (item.product.id == product.id) {
-                          item.customPrice = newPrice;
-                        }
+                        if (item.product.id == product.id) item.customPrice = newPrice;
                       }
                     });
                     await AppStorage.saveProducts();
@@ -1251,7 +1444,6 @@ class _PosScreenState extends State<PosScreen> {
     );
   }
 
-  // عند ضغط "إتمام البيع والطباعة" تظهر نافذة تأكيد أو إلغاء في حال رفض الزبون
   void _openCheckoutDialog() {
     if (cart.isEmpty) return;
 
@@ -1302,7 +1494,7 @@ class _PosScreenState extends State<PosScreen> {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      const Text('المجموع الإجمالي المطلوب:', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
+                      const Text('المجموع الإجمالي:', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
                       Text('${cartTotal.toInt()} د.ع', style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 16)),
                     ],
                   ),
@@ -1311,7 +1503,11 @@ class _PosScreenState extends State<PosScreen> {
             ),
           ),
           actions: [
-            // زر إلغاء البيع إذا رفض الزبون الطلب
+            TextButton.icon(
+              icon: const Icon(Icons.add_shopping_cart, size: 18),
+              label: const Text('إضافة مواد أخرى للفاتورة'),
+              onPressed: () => Navigator.pop(ctx),
+            ),
             OutlinedButton.icon(
               style: OutlinedButton.styleFrom(foregroundColor: Colors.red),
               icon: const Icon(Icons.cancel, color: Colors.red, size: 18),
@@ -1319,17 +1515,15 @@ class _PosScreenState extends State<PosScreen> {
               onPressed: () {
                 Navigator.pop(ctx);
                 ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('تم إلغاء البيع ولم يتم خصم أي مادة من المخزن!'), backgroundColor: Colors.orange),
+                  const SnackBar(content: Text('تم إلغاء البيع ولم يتم خصم أي مادة!'), backgroundColor: Colors.orange),
                 );
               },
             ),
-            // زر تأكيد البيع والطباعة
             ElevatedButton.icon(
               style: ElevatedButton.styleFrom(backgroundColor: Colors.black, foregroundColor: Colors.white),
               icon: const Icon(Icons.print, size: 18),
-              label: const Text('تأكيد البيع وطباعة'),
+              label: const Text('تأكيد وطباعة Xprinter'),
               onPressed: () async {
-                // خصم المخزون بعد التأكيد فقط
                 for (var cartItem in cart) {
                   if (!cartItem.product.isService) {
                     cartItem.product.stock -= cartItem.qty;
@@ -1344,7 +1538,6 @@ class _PosScreenState extends State<PosScreen> {
                 if (!mounted) return;
                 Navigator.pop(ctx);
 
-                // فتح وصل الطباعة النهائي
                 showDialog(
                   context: context,
                   builder: (_) => Directionality(textDirection: TextDirection.rtl, child: ThermalReceiptDialog(invoice: tempInvoice)),
@@ -1361,9 +1554,10 @@ class _PosScreenState extends State<PosScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final filtered = AppState.products
-        .where((p) => p.name.toLowerCase().contains(searchQuery.toLowerCase()))
-        .toList();
+    final filtered = AppState.products.where((p) {
+      final q = searchQuery.toLowerCase().trim();
+      return p.name.toLowerCase().contains(q) || p.barcode.trim().contains(q);
+    }).toList();
 
     return Scaffold(
       appBar: AppBar(
@@ -1388,7 +1582,7 @@ class _PosScreenState extends State<PosScreen> {
           IconButton(
             icon: const Icon(Icons.add_box, color: LuxuryClinicCashierApp.gold, size: 28),
             tooltip: 'إضافة مادة جديدة',
-            onPressed: _addNewProductDirectly,
+            onPressed: () => _addNewProductDirectly(),
           ),
           IconButton(
             icon: const Icon(Icons.logout, color: Colors.redAccent),
@@ -1404,17 +1598,37 @@ class _PosScreenState extends State<PosScreen> {
       ),
       body: Column(
         children: [
+          // شريط البحث المزدوج مع زر قارئ الباركود للبيع السريع
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-            child: TextField(
-              onChanged: (val) => setState(() => searchQuery = val),
-              decoration: const InputDecoration(
-                hintText: 'بحث في المواد والعلاجات والخدمات...',
-                prefixIcon: Icon(Icons.search, color: LuxuryClinicCashierApp.gold),
-                filled: true,
-                fillColor: LuxuryClinicCashierApp.darkCard,
-                border: OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(10))),
-              ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    onChanged: (val) => setState(() => searchQuery = val),
+                    decoration: const InputDecoration(
+                      hintText: 'ابحث باسم المادة أو الباركود...',
+                      prefixIcon: Icon(Icons.search, color: LuxuryClinicCashierApp.gold),
+                      filled: true,
+                      fillColor: LuxuryClinicCashierApp.darkCard,
+                      border: OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(10))),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                // زر مسح الباركود للبيع المباشر بالكاميرا
+                Container(
+                  decoration: BoxDecoration(
+                    color: LuxuryClinicCashierApp.gold,
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: IconButton(
+                    icon: const Icon(Icons.qr_code_scanner, color: Colors.black, size: 28),
+                    tooltip: 'مسح الباركود للبيع المباشر',
+                    onPressed: _scanBarcodeForSale,
+                  ),
+                ),
+              ],
             ),
           ),
           Expanded(
@@ -1466,6 +1680,26 @@ class _PosScreenState extends State<PosScreen> {
                                     ),
                                   ),
                                 ),
+                                if (p.barcode.isNotEmpty)
+                                  Positioned(
+                                    top: 6,
+                                    right: 6,
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                                      decoration: BoxDecoration(
+                                        color: Colors.black87,
+                                        borderRadius: BorderRadius.circular(6),
+                                      ),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          const Icon(Icons.qr_code, size: 10, color: LuxuryClinicCashierApp.gold),
+                                          const SizedBox(width: 2),
+                                          Text(p.barcode, style: const TextStyle(fontSize: 9, color: Colors.white70)),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
                                 if (!p.isService)
                                   Positioned(
                                     bottom: 6,
@@ -1521,8 +1755,6 @@ class _PosScreenState extends State<PosScreen> {
               },
             ),
           ),
-
-          // السلة السفلية مع زر إفراغ السلة وزر البيع
           Container(
             padding: const EdgeInsets.all(14),
             decoration: const BoxDecoration(
@@ -1544,7 +1776,7 @@ class _PosScreenState extends State<PosScreen> {
                           children: [
                             Icon(Icons.delete_sweep, color: Colors.redAccent, size: 16),
                             SizedBox(width: 4),
-                            Text('إفراغ السلة للخطأ', style: TextStyle(color: Colors.redAccent, fontSize: 11)),
+                            Text('إفراغ السلة', style: TextStyle(color: Colors.redAccent, fontSize: 11)),
                           ],
                         ),
                       ),
@@ -1635,7 +1867,7 @@ class _PosScreenState extends State<PosScreen> {
 }
 
 // -------------------------------------------------------------
-// 2. شاشة المخزن
+// 2. شاشة المخزن (مع مسح وتحديث الباركود)
 // -------------------------------------------------------------
 class InventoryScreen extends StatefulWidget {
   const InventoryScreen({super.key});
@@ -1656,12 +1888,12 @@ class _InventoryScreenState extends State<InventoryScreen> {
           children: [
             ListTile(
               leading: const Icon(Icons.photo_library, color: LuxuryClinicCashierApp.gold),
-              title: const Text('اختيار من معرض صور الهاتف'),
+              title: const Text('معرض الصور'),
               onTap: () => Navigator.pop(context, ImageSource.gallery),
             ),
             ListTile(
               leading: const Icon(Icons.camera_alt, color: LuxuryClinicCashierApp.gold),
-              title: const Text('التقاط بالكاميرا'),
+              title: const Text('الكاميرا'),
               onTap: () => Navigator.pop(context, ImageSource.camera),
             ),
           ],
@@ -1678,6 +1910,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
 
   void _openProductDialog({Product? existing}) {
     final nameCtrl = TextEditingController(text: existing?.name ?? '');
+    final barcodeCtrl = TextEditingController(text: existing?.barcode ?? '');
     final priceCtrl = TextEditingController(text: existing != null ? existing.price.toInt().toString() : '');
     final stockCtrl = TextEditingController(text: existing != null ? existing.stock.toString() : '10');
     String pickedImagePath = existing?.imagePath ?? '';
@@ -1698,9 +1931,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
                   InkWell(
                     onTap: () async {
                       final path = await _pickImageSource(ctx);
-                      if (path != null) {
-                        setDlg(() => pickedImagePath = path);
-                      }
+                      if (path != null) setDlg(() => pickedImagePath = path);
                     },
                     child: Container(
                       height: 100,
@@ -1711,22 +1942,36 @@ class _InventoryScreenState extends State<InventoryScreen> {
                         border: Border.all(color: LuxuryClinicCashierApp.gold),
                       ),
                       child: pickedImagePath.isNotEmpty && File(pickedImagePath).existsSync()
-                          ? ClipRRect(
-                              borderRadius: BorderRadius.circular(10),
-                              child: Image.file(File(pickedImagePath), fit: BoxFit.cover),
-                            )
+                          ? ClipRRect(borderRadius: BorderRadius.circular(10), child: Image.file(File(pickedImagePath), fit: BoxFit.cover))
                           : const Column(
                               mainAxisAlignment: MainAxisAlignment.center,
                               children: [
                                 Icon(Icons.add_photo_alternate, color: LuxuryClinicCashierApp.gold, size: 30),
                                 SizedBox(height: 4),
-                                Text('اختر صورة من ذاكرة الهاتف', style: TextStyle(color: Colors.grey, fontSize: 11)),
+                                Text('اختر صورة من الهاتف', style: TextStyle(color: Colors.grey, fontSize: 11)),
                               ],
                             ),
                     ),
                   ),
                   const SizedBox(height: 10),
                   TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'اسم الصنف أو الخدمة')),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: barcodeCtrl,
+                    decoration: InputDecoration(
+                      labelText: 'الباركود',
+                      suffixIcon: IconButton(
+                        icon: const Icon(Icons.qr_code_scanner, color: LuxuryClinicCashierApp.gold),
+                        onPressed: () async {
+                          final code = await Navigator.push<String>(
+                            context,
+                            MaterialPageRoute(builder: (_) => const BarcodeScannerScreen(title: "مسح باركود المنتج")),
+                          );
+                          if (code != null) setDlg(() => barcodeCtrl.text = code);
+                        },
+                      ),
+                    ),
+                  ),
                   const SizedBox(height: 8),
                   TextField(controller: priceCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'السعر (د.ع)')),
                   const SizedBox(height: 8),
@@ -1747,6 +1992,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
                 style: ElevatedButton.styleFrom(backgroundColor: LuxuryClinicCashierApp.gold, foregroundColor: Colors.black),
                 onPressed: () async {
                   final name = nameCtrl.text.trim();
+                  final barcode = barcodeCtrl.text.trim();
                   final price = double.tryParse(priceCtrl.text) ?? 0.0;
                   final stock = int.tryParse(stockCtrl.text) ?? 0;
 
@@ -1754,6 +2000,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
                     setState(() {
                       if (existing != null) {
                         existing.name = name;
+                        existing.barcode = barcode;
                         existing.price = price;
                         existing.stock = stock;
                         existing.imagePath = pickedImagePath;
@@ -1761,6 +2008,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
                         AppState.products.add(Product(
                           id: DateTime.now().millisecondsSinceEpoch.toString(),
                           name: name,
+                          barcode: barcode,
                           price: price,
                           stock: stock,
                           isService: isService,
@@ -1788,11 +2036,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
       appBar: AppBar(
         title: const Text('إدارة المخزون والمواد'),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.add),
-            tooltip: 'إضافة صنف جديد',
-            onPressed: () => _openProductDialog(),
-          ),
+          IconButton(icon: const Icon(Icons.add), tooltip: 'إضافة صنف جديد', onPressed: () => _openProductDialog()),
         ],
       ),
       body: ListView.separated(
@@ -1812,11 +2056,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
               children: [
                 ClipRRect(
                   borderRadius: BorderRadius.circular(8),
-                  child: SizedBox(
-                    width: 50,
-                    height: 50,
-                    child: buildProductImage(p, size: 28),
-                  ),
+                  child: SizedBox(width: 50, height: 50, child: buildProductImage(p, size: 28)),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
@@ -1824,10 +2064,10 @@ class _InventoryScreenState extends State<InventoryScreen> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(p.name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-                      const SizedBox(height: 3),
+                      if (p.barcode.isNotEmpty)
+                        Text('الباركود: ${p.barcode}', style: const TextStyle(fontSize: 10, color: Colors.amber)),
                       Text('${p.price.toInt()} د.ع', style: const TextStyle(color: LuxuryClinicCashierApp.gold, fontWeight: FontWeight.bold)),
-                      if (!p.isService)
-                        Text('المتوفر: ${p.stock}', style: const TextStyle(fontSize: 11, color: Colors.grey)),
+                      if (!p.isService) Text('المتوفر: ${p.stock}', style: const TextStyle(fontSize: 11, color: Colors.grey)),
                     ],
                   ),
                 ),
@@ -1941,11 +2181,7 @@ class _PurchasesScreenState extends State<PurchasesScreen> {
       appBar: AppBar(
         title: const Text('سجل المشتريات والموردين'),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.add_shopping_cart),
-            tooltip: 'إضافة شراء جديد',
-            onPressed: _addPurchaseDialog,
-          )
+          IconButton(icon: const Icon(Icons.add_shopping_cart), tooltip: 'إضافة شراء جديد', onPressed: _addPurchaseDialog)
         ],
       ),
       body: AppState.purchases.isEmpty
@@ -1991,7 +2227,7 @@ class _PurchasesScreenState extends State<PurchasesScreen> {
 }
 
 // -------------------------------------------------------------
-// 4. سجل المبيعات والفواتير (مع فقرة الاسترجاع وإعادة المخزن)
+// 4. سجل المبيعات والفواتير
 // -------------------------------------------------------------
 class SalesHistoryScreen extends StatefulWidget {
   const SalesHistoryScreen({super.key});
@@ -2001,7 +2237,6 @@ class SalesHistoryScreen extends StatefulWidget {
 }
 
 class _SalesHistoryScreenState extends State<SalesHistoryScreen> {
-  // استرجاع الفاتورة وإعادة بضاعتها للمخزن
   void _refundInvoiceDialog(SaleInvoice invoice) {
     showDialog(
       context: context,
@@ -2010,13 +2245,12 @@ class _SalesHistoryScreenState extends State<SalesHistoryScreen> {
         child: AlertDialog(
           backgroundColor: LuxuryClinicCashierApp.darkCard,
           title: const Text('استرجاع الفاتورة وإعادة البضاعة', style: TextStyle(color: Colors.orangeAccent)),
-          content: Text('هل أنت متأكد من استرجاع الفاتورة رقم (${invoice.invoiceNumber}) بمبلغ ${invoice.totalAmount.toInt()} د.ع؟\nسيتم إرجاع كميات المواد المباعة إلى المخزن تلقائياً.'),
+          content: Text('هل تريد استرجاع الفاتورة رقم (${invoice.invoiceNumber}) بمبلغ ${invoice.totalAmount.toInt()} د.ع وإعادة موادها للمخزن؟'),
           actions: [
             TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('إلغاء')),
             ElevatedButton(
               style: ElevatedButton.styleFrom(backgroundColor: Colors.orangeAccent, foregroundColor: Colors.black),
               onPressed: () async {
-                // إعادة الكميات إلى المخزون
                 for (var item in invoice.items) {
                   final pIndex = AppState.products.indexWhere((p) => p.id == item.product.id);
                   if (pIndex != -1 && !AppState.products[pIndex].isService) {
@@ -2035,7 +2269,7 @@ class _SalesHistoryScreenState extends State<SalesHistoryScreen> {
                 if (!mounted) return;
                 Navigator.pop(ctx);
                 ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('تم استرجاع الفاتورة وإعادة المواد للمخزن بنجاح!'), backgroundColor: Colors.green),
+                  const SnackBar(content: Text('تم استرجاع الفاتورة وإعادة المواد للمخزن!'), backgroundColor: Colors.green),
                 );
               },
               child: const Text('تأكيد الاسترجاع'),
@@ -2067,55 +2301,50 @@ class _SalesHistoryScreenState extends State<SalesHistoryScreen> {
                       color: invoice.isReturned ? Colors.redAccent.withOpacity(0.5) : LuxuryClinicCashierApp.darkBorder,
                     ),
                   ),
-                  child: Column(
-                    children: [
-                      ListTile(
-                        contentPadding: EdgeInsets.zero,
-                        title: Row(
-                          children: [
-                            Text('${invoice.invoiceNumber} — ${invoice.totalAmount.toInt()} د.ع',
-                                style: TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                  color: invoice.isReturned ? Colors.grey : LuxuryClinicCashierApp.gold,
-                                  decoration: invoice.isReturned ? TextDecoration.lineThrough : null,
-                                )),
-                            if (invoice.isReturned) ...[
-                              const SizedBox(width: 8),
-                              Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                decoration: BoxDecoration(color: Colors.redAccent.withOpacity(0.2), borderRadius: BorderRadius.circular(6)),
-                                child: const Text('مسترجعة', style: TextStyle(color: Colors.redAccent, fontSize: 10, fontWeight: FontWeight.bold)),
-                              ),
-                            ],
-                          ],
+                  child: ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: Row(
+                      children: [
+                        Text('${invoice.invoiceNumber} — ${invoice.totalAmount.toInt()} د.ع',
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              color: invoice.isReturned ? Colors.grey : LuxuryClinicCashierApp.gold,
+                              decoration: invoice.isReturned ? TextDecoration.lineThrough : null,
+                            )),
+                        if (invoice.isReturned) ...[
+                          const SizedBox(width: 8),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(color: Colors.redAccent.withOpacity(0.2), borderRadius: BorderRadius.circular(6)),
+                            child: const Text('مسترجعة', style: TextStyle(color: Colors.redAccent, fontSize: 10, fontWeight: FontWeight.bold)),
+                          ),
+                        ],
+                      ],
+                    ),
+                    subtitle: Text(
+                      'الكاشير: ${invoice.cashierName} (@${invoice.cashierUsername})\nالتاريخ: ${invoice.date.year}/${invoice.date.month}/${invoice.date.day} ${invoice.date.hour}:${invoice.date.minute}',
+                      style: const TextStyle(fontSize: 11, color: Colors.grey),
+                    ),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          icon: const Icon(Icons.print, color: Colors.white),
+                          onPressed: () {
+                            showDialog(
+                              context: context,
+                              builder: (_) => Directionality(textDirection: TextDirection.rtl, child: ThermalReceiptDialog(invoice: invoice)),
+                            );
+                          },
                         ),
-                        subtitle: Text(
-                          'الكاشير: ${invoice.cashierName} (@${invoice.cashierUsername})\nالتاريخ: ${invoice.date.year}/${invoice.date.month}/${invoice.date.day} ${invoice.date.hour}:${invoice.date.minute}',
-                          style: const TextStyle(fontSize: 11, color: Colors.grey),
-                        ),
-                        trailing: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            IconButton(
-                              icon: const Icon(Icons.print, color: Colors.white),
-                              tooltip: 'طباعة الفاتورة',
-                              onPressed: () {
-                                showDialog(
-                                  context: context,
-                                  builder: (_) => Directionality(textDirection: TextDirection.rtl, child: ThermalReceiptDialog(invoice: invoice)),
-                                );
-                              },
-                            ),
-                            if (!invoice.isReturned)
-                              IconButton(
-                                icon: const Icon(Icons.assignment_return, color: Colors.orangeAccent),
-                                tooltip: 'استرجاع الفاتورة وإعادة المواد للمخزن',
-                                onPressed: () => _refundInvoiceDialog(invoice),
-                              ),
-                          ],
-                        ),
-                      ),
-                    ],
+                        if (!invoice.isReturned)
+                          IconButton(
+                            icon: const Icon(Icons.assignment_return, color: Colors.orangeAccent),
+                            tooltip: 'استرجاع الفاتورة',
+                            onPressed: () => _refundInvoiceDialog(invoice),
+                          ),
+                      ],
+                    ),
                   ),
                 );
               },
@@ -2125,7 +2354,7 @@ class _SalesHistoryScreenState extends State<SalesHistoryScreen> {
 }
 
 // -------------------------------------------------------------
-// 5. الجرد والإحصائيات الشاملة (للمدير)
+// 5. الجرد والإحصائيات الشاملة
 // -------------------------------------------------------------
 class AdminMonthlyAuditScreen extends StatefulWidget {
   const AdminMonthlyAuditScreen({super.key});
@@ -2141,7 +2370,6 @@ class _AdminMonthlyAuditScreenState extends State<AdminMonthlyAuditScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // تصفية الفواتير واستثناء المسترجعة من الأرباح الصافية
     final filteredSales = AppState.sales.where((s) {
       final matchDate = s.date.year == selectedYear && s.date.month == selectedMonth;
       if (selectedUsername == null) return matchDate;
@@ -2162,9 +2390,7 @@ class _AdminMonthlyAuditScreenState extends State<AdminMonthlyAuditScreen> {
             onPressed: () {
               Navigator.push(
                 context,
-                MaterialPageRoute(
-                  builder: (_) => const Directionality(textDirection: TextDirection.rtl, child: UsersManagementScreen()),
-                ),
+                MaterialPageRoute(builder: (_) => const Directionality(textDirection: TextDirection.rtl, child: UsersManagementScreen())),
               ).then((_) => setState(() {}));
             },
           ),
@@ -2258,7 +2484,7 @@ class _AdminMonthlyAuditScreenState extends State<AdminMonthlyAuditScreen> {
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      const Text('إجمالي تكلفة المشتريات من المذاخر:', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                      const Text('إجمالي تكلفة المشتريات:', style: TextStyle(fontSize: 12, color: Colors.grey)),
                       Text('${totalPurchases.toInt()} د.ع', style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.redAccent)),
                     ],
                   ),
@@ -2566,12 +2792,65 @@ class _UsersManagementScreenState extends State<UsersManagementScreen> {
 }
 
 // -------------------------------------------------------------
-// حوار وطباعة الفاتورة الحرارية
+// حوار وطباعة الفاتورة الحرارية (Xprinter 80mm)
 // -------------------------------------------------------------
-class ThermalReceiptDialog extends StatelessWidget {
+class ThermalReceiptDialog extends StatefulWidget {
   final SaleInvoice invoice;
 
   const ThermalReceiptDialog({super.key, required this.invoice});
+
+  @override
+  State<ThermalReceiptDialog> createState() => _ThermalReceiptDialogState();
+}
+
+class _ThermalReceiptDialogState extends State<ThermalReceiptDialog> {
+  final GlobalKey _receiptKey = GlobalKey();
+  bool _isPrinting = false;
+
+  Future<void> _printDirectToXprinter() async {
+    setState(() => _isPrinting = true);
+
+    try {
+      RenderRepaintBoundary? boundary = _receiptKey.currentContext?.findRenderObject() as RenderRepaintBoundary?;
+      if (boundary == null) return;
+
+      ui.Image image = await boundary.toImage(pixelRatio: 2.0);
+      List<int> bytes = await XprinterHelper.convertImageToEscPos(image);
+
+      bool success = await XprinterHelper.printViaNetwork(
+        ip: AppState.printerIp,
+        bytes: bytes,
+        port: 9100,
+      );
+
+      if (!mounted) return;
+      setState(() => _isPrinting = false);
+
+      if (success) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('تمت الطباعة وقص الورق عبر طابعة Xprinter بنجاح 🖨️'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('تعذر الاتصال بالطابعة على الآيبي (${AppState.printerIp})، تأكد من ربط الكيبل بالراوتر وتحديث الآيبي في الضبط.'),
+            backgroundColor: Colors.redAccent,
+            duration: const Duration(seconds: 4),
+          ),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _isPrinting = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('حدث خطأ أثناء الطباعة: $e'), backgroundColor: Colors.redAccent),
+      );
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -2580,87 +2859,98 @@ class ThermalReceiptDialog extends StatelessWidget {
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       child: Container(
         width: 320,
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.all(14),
         child: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.local_hospital, size: 40, color: Colors.black87),
-              const SizedBox(height: 4),
-              Text(
-                AppState.storeName,
-                textAlign: TextAlign.center,
-                style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 16),
-              ),
-              const SizedBox(height: 2),
-              Text(
-                AppState.storeAddress,
-                textAlign: TextAlign.center,
-                style: const TextStyle(color: Colors.black87, fontSize: 11),
-              ),
-              const SizedBox(height: 2),
-              Text(
-                'هاتف العيادة: ${AppState.storePhone}',
-                style: const TextStyle(color: Colors.black, fontSize: 12, fontWeight: FontWeight.bold),
-              ),
-              const Divider(color: Colors.black87, thickness: 1),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text('فاتورة: ${invoice.invoiceNumber}', style: const TextStyle(color: Colors.black, fontSize: 11)),
-                  Text('${invoice.date.year}/${invoice.date.month}/${invoice.date.day} ${invoice.date.hour}:${invoice.date.minute}',
-                      style: const TextStyle(color: Colors.black, fontSize: 11)),
-                ],
-              ),
-              Align(
-                alignment: Alignment.centerRight,
-                child: Text('الكاشير: ${invoice.cashierName}', style: const TextStyle(color: Colors.black, fontSize: 11)),
-              ),
-              const Divider(color: Colors.black54),
-              ...invoice.items.map((item) => Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 2),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Expanded(
-                          child: Text(
-                            '${item.product.name} (x${item.qty})',
-                            style: const TextStyle(color: Colors.black, fontSize: 11),
-                          ),
-                        ),
-                        Text(
-                          '${item.subtotal.toInt()} د.ع',
-                          style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 11),
-                        ),
-                      ],
-                    ),
-                  )),
-              const Divider(color: Colors.black87, thickness: 1),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  const Text('المجموع النهائي:', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 14)),
-                  Text('${invoice.totalAmount.toInt()} د.ع', style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 16)),
-                ],
-              ),
-              const SizedBox(height: 10),
-              // ملاحظة أسفل الفاتورة المعتمدة من الإعدادات
-              Text(
-                AppState.receiptFooterNote,
-                textAlign: TextAlign.center,
-                style: const TextStyle(color: Colors.black54, fontSize: 10, fontStyle: FontStyle.italic),
+              RepaintBoundary(
+                key: _receiptKey,
+                child: Container(
+                  color: Colors.white,
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.local_hospital, size: 36, color: Colors.black87),
+                      const SizedBox(height: 4),
+                      Text(
+                        AppState.storeName,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 16),
+                      ),
+                      Text(
+                        AppState.storeAddress,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: Colors.black87, fontSize: 11),
+                      ),
+                      Text(
+                        'هاتف العيادة: ${AppState.storePhone}',
+                        style: const TextStyle(color: Colors.black, fontSize: 12, fontWeight: FontWeight.bold),
+                      ),
+                      const Divider(color: Colors.black87, thickness: 1),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text('فاتورة: ${widget.invoice.invoiceNumber}', style: const TextStyle(color: Colors.black, fontSize: 11)),
+                          Text('${widget.invoice.date.year}/${widget.invoice.date.month}/${widget.invoice.date.day} ${widget.invoice.date.hour}:${widget.invoice.date.minute}',
+                              style: const TextStyle(color: Colors.black, fontSize: 11)),
+                        ],
+                      ),
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: Text('الكاشير: ${widget.invoice.cashierName}', style: const TextStyle(color: Colors.black, fontSize: 11)),
+                      ),
+                      const Divider(color: Colors.black54),
+                      ...widget.invoice.items.map((item) => Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 2),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    '${item.product.name} (x${item.qty})',
+                                    style: const TextStyle(color: Colors.black, fontSize: 11),
+                                  ),
+                                ),
+                                Text(
+                                  '${item.subtotal.toInt()} د.ع',
+                                  style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 11),
+                                ),
+                              ],
+                            ),
+                          )),
+                      const Divider(color: Colors.black87, thickness: 1),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text('المجموع النهائي:', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 14)),
+                          Text('${widget.invoice.totalAmount.toInt()} د.ع', style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 16)),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        AppState.receiptFooterNote,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: Colors.black54, fontSize: 10, fontStyle: FontStyle.italic),
+                      ),
+                    ],
+                  ),
+                ),
               ),
               const SizedBox(height: 14),
               ElevatedButton.icon(
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.black, foregroundColor: Colors.white),
-                icon: const Icon(Icons.print, size: 16),
-                label: const Text('طباعة الفاتورة'),
-                onPressed: () {
-                  Navigator.pop(context);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('تم إرسال أمر الطباعة بنجاح 🖨️'), backgroundColor: Colors.green),
-                  );
-                },
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.black, foregroundColor: Colors.white, minimumSize: const Size.fromHeight(44)),
+                icon: _isPrinting
+                    ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                    : const Icon(Icons.print, size: 18),
+                label: Text(_isPrinting ? 'جاري إرسال الأمر للطابعة...' : 'طباعة مباشرة على Xprinter'),
+                onPressed: _isPrinting ? null : _printDirectToXprinter,
+              ),
+              const SizedBox(height: 6),
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('إغلاق المعاينة', style: TextStyle(color: Colors.black54)),
               ),
             ],
           ),
