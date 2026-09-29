@@ -100,6 +100,18 @@ class CartItem {
       : customPrice = price ?? product.price;
 
   double get subtotal => customPrice * qty;
+
+  Map<String, dynamic> toJson() => {
+        'product': product.toJson(),
+        'qty': qty,
+        'customPrice': customPrice,
+      };
+
+  factory CartItem.fromJson(Map<String, dynamic> json) => CartItem(
+        product: Product.fromJson(json['product']),
+        qty: json['qty'],
+        price: (json['customPrice'] as num).toDouble(),
+      );
 }
 
 class SaleInvoice {
@@ -109,6 +121,8 @@ class SaleInvoice {
   final double totalAmount;
   final String cashierName;
   final String cashierUsername;
+  bool isReturned; // مؤشر الاسترجاع
+  DateTime? returnDate;
 
   SaleInvoice({
     required this.invoiceNumber,
@@ -117,6 +131,8 @@ class SaleInvoice {
     required this.totalAmount,
     required this.cashierName,
     required this.cashierUsername,
+    this.isReturned = false,
+    this.returnDate,
   });
 
   Map<String, dynamic> toJson() => {
@@ -125,15 +141,22 @@ class SaleInvoice {
         'totalAmount': totalAmount,
         'cashierName': cashierName,
         'cashierUsername': cashierUsername,
+        'isReturned': isReturned,
+        'returnDate': returnDate?.toIso8601String(),
+        'items': items.map((i) => i.toJson()).toList(),
       };
 
   factory SaleInvoice.fromJson(Map<String, dynamic> json) => SaleInvoice(
         invoiceNumber: json['invoiceNumber'],
         date: DateTime.parse(json['date']),
-        items: [],
+        items: json['items'] != null
+            ? (json['items'] as List).map((i) => CartItem.fromJson(i)).toList()
+            : [],
         totalAmount: (json['totalAmount'] as num).toDouble(),
         cashierName: json['cashierName'],
         cashierUsername: json['cashierUsername'] ?? 'general',
+        isReturned: json['isReturned'] ?? false,
+        returnDate: json['returnDate'] != null ? DateTime.parse(json['returnDate']) : null,
       );
 }
 
@@ -179,14 +202,15 @@ class PurchaseRecord {
 // محرك التخزين الدائم
 // -------------------------------------------------------------
 class AppStorage {
-  static const String _usersKey = 'app_users_v7';
-  static const String _productsKey = 'app_products_v7';
-  static const String _salesKey = 'app_sales_v7';
-  static const String _purchasesKey = 'app_purchases_v7';
-  static const String _recoveryKey = 'app_recovery_v7';
+  static const String _usersKey = 'app_users_v8';
+  static const String _productsKey = 'app_products_v8';
+  static const String _salesKey = 'app_sales_v8';
+  static const String _purchasesKey = 'app_purchases_v8';
+  static const String _recoveryKey = 'app_recovery_v8';
   static const String _storeNameKey = 'app_store_name';
   static const String _storePhoneKey = 'app_store_phone';
   static const String _storeAddressKey = 'app_store_address';
+  static const String _receiptFooterKey = 'app_receipt_footer';
 
   static Future<void> loadData() async {
     final prefs = await SharedPreferences.getInstance();
@@ -221,6 +245,7 @@ class AppStorage {
     AppState.storeName = prefs.getString(_storeNameKey) ?? "عيادة ومستلزمات التمريض المتنقلة";
     AppState.storePhone = prefs.getString(_storePhoneKey) ?? "0770 123 4567";
     AppState.storeAddress = prefs.getString(_storeAddressKey) ?? "بغداد - الرعاية السريرية والمنزلية الفائقة";
+    AppState.receiptFooterNote = prefs.getString(_receiptFooterKey) ?? "شكراً لزيارتكم — نتمنى لكم دوام العافية 🌸\nيُرجى الاحتفاظ بالوصل للاسترجاع خلال 48 ساعة";
   }
 
   static Future<void> saveUsers() async {
@@ -249,14 +274,27 @@ class AppStorage {
     AppState.recoverySecret = secret;
   }
 
-  static Future<void> saveClinicInfo(String name, String phone, String address) async {
+  static Future<void> saveClinicSettings({
+    required String name,
+    required String phone,
+    required String address,
+    required String footer,
+  }) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_storeNameKey, name);
     await prefs.setString(_storePhoneKey, phone);
     await prefs.setString(_storeAddressKey, address);
+    await prefs.setString(_receiptFooterKey, footer);
     AppState.storeName = name;
     AppState.storePhone = phone;
     AppState.storeAddress = address;
+    AppState.receiptFooterNote = footer;
+  }
+
+  static Future<void> clearAllSalesHistory() async {
+    final prefs = await SharedPreferences.getInstance();
+    AppState.sales.clear();
+    await prefs.remove(_salesKey);
   }
 }
 
@@ -267,6 +305,7 @@ class AppState {
   static String storeName = "عيادة ومستلزمات التمريض المتنقلة";
   static String storePhone = "0770 123 4567";
   static String storeAddress = "بغداد - الرعاية السريرية والمنزلية الفائقة";
+  static String receiptFooterNote = "شكراً لزيارتكم — نتمنى لكم دوام العافية 🌸\nيُرجى الاحتفاظ بالوصل للاسترجاع خلال 48 ساعة";
 
   static AppUser? currentUser;
   static List<AppUser> users = [];
@@ -324,9 +363,7 @@ class LuxuryClinicCashierApp extends StatelessWidget {
   }
 }
 
-// -------------------------------------------------------------
 // ويدجت عرض الصورة
-// -------------------------------------------------------------
 Widget buildProductImage(Product product, {double size = 45}) {
   if (product.imagePath.isNotEmpty && File(product.imagePath).existsSync()) {
     return Image.file(
@@ -595,14 +632,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 const SizedBox(height: 24),
                 TextField(controller: _userCtrl, decoration: const InputDecoration(labelText: 'اسم المستخدم', prefixIcon: Icon(Icons.person, color: LuxuryClinicCashierApp.gold))),
                 const SizedBox(height: 14),
-                TextField(
-                  controller: _passCtrl,
-                  obscureText: true,
-                  decoration: const InputDecoration(
-                    labelText: 'الرمز السري',
-                    prefixIcon: Icon(Icons.lock, color: LuxuryClinicCashierApp.gold),
-                  ),
-                ),
+                TextField(controller: _passCtrl, obscureText: true, decoration: const InputDecoration(labelText: 'الرمز السري', prefixIcon: Icon(Icons.lock, color: LuxuryClinicCashierApp.gold))),
                 Align(
                   alignment: Alignment.centerLeft,
                   child: TextButton(
@@ -634,7 +664,7 @@ class _LoginScreenState extends State<LoginScreen> {
 }
 
 // -------------------------------------------------------------
-// شاشة الملف الشخصي وإعدادات العيادة
+// شاشة الضبط والخيارات المتقدمة والملف الشخصي
 // -------------------------------------------------------------
 class ProfileSettingsScreen extends StatefulWidget {
   const ProfileSettingsScreen({super.key});
@@ -652,6 +682,7 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
   late TextEditingController _clinicNameCtrl;
   late TextEditingController _clinicPhoneCtrl;
   late TextEditingController _clinicAddressCtrl;
+  late TextEditingController _footerNoteCtrl;
 
   @override
   void initState() {
@@ -665,9 +696,10 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
     _clinicNameCtrl = TextEditingController(text: AppState.storeName);
     _clinicPhoneCtrl = TextEditingController(text: AppState.storePhone);
     _clinicAddressCtrl = TextEditingController(text: AppState.storeAddress);
+    _footerNoteCtrl = TextEditingController(text: AppState.receiptFooterNote);
   }
 
-  void _saveUserProfile() async {
+  void _saveAllSettings() async {
     final user = AppState.currentUser;
     if (user != null) {
       user.fullName = _fullNameCtrl.text.trim();
@@ -680,18 +712,64 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
     }
 
     if (user?.role == UserRole.admin) {
-      await AppStorage.saveClinicInfo(
-        _clinicNameCtrl.text.trim(),
-        _clinicPhoneCtrl.text.trim(),
-        _clinicAddressCtrl.text.trim(),
+      await AppStorage.saveClinicSettings(
+        name: _clinicNameCtrl.text.trim(),
+        phone: _clinicPhoneCtrl.text.trim(),
+        address: _clinicAddressCtrl.text.trim(),
+        footer: _footerNoteCtrl.text.trim(),
       );
     }
 
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('تم حفظ وتحديث المعلومات بنجاح!'), backgroundColor: Colors.green),
+      const SnackBar(content: Text('تم حفظ كافة الإعدادات والبيانات بنجاح!'), backgroundColor: Colors.green),
     );
     setState(() {});
+  }
+
+  // تصفير فواتير المبيعات التجريبية (ميزة ينصح بها للبدء الرسمي)
+  void _clearTestSalesDialog() {
+    final passCtrl = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (ctx) => Directionality(
+        textDirection: TextDirection.rtl,
+        child: AlertDialog(
+          backgroundColor: LuxuryClinicCashierApp.darkCard,
+          title: const Text('تصفير سجل المبيعات التجريبية', style: TextStyle(color: Colors.redAccent)),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text('هل تريد حذف جميع فواتير البيع المسجلة للبدء من الصفر؟ أدخل رمز الأمان لتأكيد ذلك:'),
+              const SizedBox(height: 10),
+              TextField(controller: passCtrl, obscureText: true, decoration: const InputDecoration(labelText: 'رمز الأمان الاحتياطي')),
+            ],
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('إلغاء')),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
+              onPressed: () async {
+                if (passCtrl.text.trim() == AppState.recoverySecret) {
+                  await AppStorage.clearAllSalesHistory();
+                  if (!mounted) return;
+                  Navigator.pop(ctx);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('تم تفريغ سجل المبيعات بنجاح!'), backgroundColor: Colors.green),
+                  );
+                  setState(() {});
+                } else {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('رمز الأمان غير صحيح!'), backgroundColor: Colors.redAccent),
+                  );
+                }
+              },
+              child: const Text('تأكيد الحذف'),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   @override
@@ -700,14 +778,13 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
     final isAdmin = user?.role == UserRole.admin;
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('الضبط والملف الشخصي'),
-      ),
+      appBar: AppBar(title: const Text('الضبط والخيارات والملف الشخصي')),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // بطاقة المستخدم
             Container(
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
@@ -718,13 +795,9 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
               child: Row(
                 children: [
                   CircleAvatar(
-                    radius: 30,
+                    radius: 28,
                     backgroundColor: LuxuryClinicCashierApp.gold.withOpacity(0.2),
-                    child: Icon(
-                      isAdmin ? Icons.admin_panel_settings : Icons.person,
-                      size: 34,
-                      color: LuxuryClinicCashierApp.gold,
-                    ),
+                    child: Icon(isAdmin ? Icons.admin_panel_settings : Icons.person, color: LuxuryClinicCashierApp.gold, size: 32),
                   ),
                   const SizedBox(width: 14),
                   Expanded(
@@ -732,9 +805,7 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(user?.fullName ?? '', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                        const SizedBox(height: 4),
-                        Text('اسم الدخول: ${user?.username} | الرتبة: ${isAdmin ? "مدير عام" : "كاشير/تمريض"}',
-                            style: const TextStyle(color: Colors.grey, fontSize: 12)),
+                        Text('اسم المستخدم: ${user?.username} | الرتبة: ${isAdmin ? "مدير عام" : "كاشير"}', style: const TextStyle(color: Colors.grey, fontSize: 12)),
                       ],
                     ),
                   ),
@@ -742,31 +813,48 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
               ),
             ),
             const SizedBox(height: 20),
+
             const Text('بيانات المستخدم الشخصية:', style: TextStyle(fontWeight: FontWeight.bold, color: LuxuryClinicCashierApp.gold, fontSize: 15)),
             const SizedBox(height: 10),
             TextField(controller: _fullNameCtrl, decoration: const InputDecoration(labelText: 'الاسم الكامل', prefixIcon: Icon(Icons.badge))),
             const SizedBox(height: 10),
-            TextField(controller: _phoneCtrl, keyboardType: TextInputType.phone, decoration: const InputDecoration(labelText: 'رقم هاتف المستخدم', prefixIcon: Icon(Icons.phone))),
+            TextField(controller: _phoneCtrl, keyboardType: TextInputType.phone, decoration: const InputDecoration(labelText: 'رقم الهاتف الخاص بك', prefixIcon: Icon(Icons.phone))),
             const SizedBox(height: 10),
-            TextField(controller: _addressCtrl, decoration: const InputDecoration(labelText: 'عنوان سكن المستخدم', prefixIcon: Icon(Icons.location_on))),
+            TextField(controller: _addressCtrl, decoration: const InputDecoration(labelText: 'عنوان سكنك', prefixIcon: Icon(Icons.location_on))),
             const SizedBox(height: 10),
             TextField(controller: _passwordCtrl, decoration: const InputDecoration(labelText: 'الرمز السري للحساب', prefixIcon: Icon(Icons.lock))),
-            const SizedBox(height: 24),
+
             if (isAdmin) ...[
+              const SizedBox(height: 24),
               const Divider(color: LuxuryClinicCashierApp.darkBorder),
-              const SizedBox(height: 10),
-              const Text('بيانات العيادة الرسمية (المطبوعة على الفاتورة):',
-                  style: TextStyle(fontWeight: FontWeight.bold, color: LuxuryClinicCashierApp.gold, fontSize: 15)),
+              const Text('إعدادات الفاتورة والعيادة المطبوعة (خيارات ننصح بها):', style: TextStyle(fontWeight: FontWeight.bold, color: LuxuryClinicCashierApp.gold, fontSize: 15)),
               const SizedBox(height: 6),
-              const Text('هذه المعلومات تظهر على رأس كل وصل مطبوع للطابعة', style: TextStyle(color: Colors.grey, fontSize: 11)),
+              const Text('هذه المعلومات تطبع تلقائياً على كل وصل يستلمه المريض أو الزبون:', style: TextStyle(color: Colors.grey, fontSize: 11)),
               const SizedBox(height: 10),
-              TextField(controller: _clinicNameCtrl, decoration: const InputDecoration(labelText: 'اسم العيادة الرئيسي', prefixIcon: Icon(Icons.local_hospital))),
+              TextField(controller: _clinicNameCtrl, decoration: const InputDecoration(labelText: 'اسم العيادة الرئيسي المطبوع', prefixIcon: Icon(Icons.local_hospital))),
               const SizedBox(height: 10),
-              TextField(controller: _clinicPhoneCtrl, keyboardType: TextInputType.phone, decoration: const InputDecoration(labelText: 'هاتف العيادة للزبائن', prefixIcon: Icon(Icons.call))),
+              TextField(controller: _clinicPhoneCtrl, keyboardType: TextInputType.phone, decoration: const InputDecoration(labelText: 'هاتف العيادة المطبوع على الوصل', prefixIcon: Icon(Icons.call))),
               const SizedBox(height: 10),
               TextField(controller: _clinicAddressCtrl, decoration: const InputDecoration(labelText: 'عنوان وموقع العيادة المطبوع', prefixIcon: Icon(Icons.map))),
-              const SizedBox(height: 20),
+              const SizedBox(height: 10),
+              TextField(
+                controller: _footerNoteCtrl,
+                maxLines: 2,
+                decoration: const InputDecoration(labelText: 'ملاحظة أسفل الفاتورة (شروط الاسترجاع والنصائح الطبية)', prefixIcon: Icon(Icons.notes)),
+              ),
+              const SizedBox(height: 18),
+              OutlinedButton.icon(
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: Colors.redAccent,
+                  side: const BorderSide(color: Colors.redAccent),
+                  minimumSize: const Size.fromHeight(45),
+                ),
+                icon: const Icon(Icons.delete_sweep),
+                label: const Text('تصفير سجل المبيعات والفواتير السابقة'),
+                onPressed: _clearTestSalesDialog,
+              ),
             ],
+            const SizedBox(height: 24),
             ElevatedButton.icon(
               style: ElevatedButton.styleFrom(
                 backgroundColor: LuxuryClinicCashierApp.gold,
@@ -775,8 +863,8 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
               ),
               icon: const Icon(Icons.save),
-              label: const Text('حفظ كافة التعديلات', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
-              onPressed: _saveUserProfile,
+              label: const Text('حفظ جميع الإعدادات والخيارات', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+              onPressed: _saveAllSettings,
             ),
           ],
         ),
@@ -842,7 +930,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
 }
 
 // -------------------------------------------------------------
-// 1. شاشة البيع والكاشير
+// 1. شاشة البيع والكاشير مع حذف السلة وخيار إلغاء البيع
 // -------------------------------------------------------------
 class PosScreen extends StatefulWidget {
   const PosScreen({super.key});
@@ -880,6 +968,36 @@ class _PosScreenState extends State<PosScreen> {
         cart.add(CartItem(product: product, qty: 1));
       }
     });
+  }
+
+  // حذف السلة بالكامل للخطأ أو بيع سهواً
+  void _clearCartDialog() {
+    if (cart.isEmpty) return;
+    showDialog(
+      context: context,
+      builder: (ctx) => Directionality(
+        textDirection: TextDirection.rtl,
+        child: AlertDialog(
+          backgroundColor: LuxuryClinicCashierApp.darkCard,
+          title: const Text('تفريغ وإلغاء السلة', style: TextStyle(color: Colors.redAccent)),
+          content: const Text('هل أنت متأكد من حذف جميع المواد المضافة في السلة للبدء من جديد؟'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('تراجع')),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
+              onPressed: () {
+                setState(() => cart.clear());
+                Navigator.pop(ctx);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('تم تفريغ السلة بنجاح')),
+                );
+              },
+              child: const Text('نعم، إفراغ السلة'),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Future<String?> _pickImageSource(BuildContext ctx) async {
@@ -939,7 +1057,7 @@ class _PosScreenState extends State<PosScreen> {
                     },
                     borderRadius: BorderRadius.circular(12),
                     child: Container(
-                      height: 110,
+                      height: 100,
                       width: double.infinity,
                       decoration: BoxDecoration(
                         color: Colors.white10,
@@ -954,14 +1072,14 @@ class _PosScreenState extends State<PosScreen> {
                           : const Column(
                               mainAxisAlignment: MainAxisAlignment.center,
                               children: [
-                                Icon(Icons.add_a_photo, color: LuxuryClinicCashierApp.gold, size: 36),
-                                SizedBox(height: 6),
-                                Text('اضغط لاختيار صورة من هاتفك', style: TextStyle(color: Colors.grey, fontSize: 12)),
+                                Icon(Icons.add_a_photo, color: LuxuryClinicCashierApp.gold, size: 32),
+                                SizedBox(height: 4),
+                                Text('اضغط لاختيار صورة من هاتفك', style: TextStyle(color: Colors.grey, fontSize: 11)),
                               ],
                             ),
                     ),
                   ),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 10),
                   TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'اسم المادة أو الخدمة')),
                   const SizedBox(height: 8),
                   TextField(controller: priceCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'السعر (د.ع)')),
@@ -1133,17 +1251,12 @@ class _PosScreenState extends State<PosScreen> {
     );
   }
 
-  void _completeSaleAndPrint() async {
+  // عند ضغط "إتمام البيع والطباعة" تظهر نافذة تأكيد أو إلغاء في حال رفض الزبون
+  void _openCheckoutDialog() {
     if (cart.isEmpty) return;
 
-    for (var cartItem in cart) {
-      if (!cartItem.product.isService) {
-        cartItem.product.stock -= cartItem.qty;
-      }
-    }
-
-    final newInvoice = SaleInvoice(
-      invoiceNumber: "INV-${AppState.invoiceCounter++}",
+    final tempInvoice = SaleInvoice(
+      invoiceNumber: "INV-${AppState.invoiceCounter}",
       date: DateTime.now(),
       items: List.from(cart),
       totalAmount: cartTotal,
@@ -1151,19 +1264,99 @@ class _PosScreenState extends State<PosScreen> {
       cashierUsername: AppState.currentUser?.username ?? "unknown",
     );
 
-    setState(() {
-      AppState.sales.insert(0, newInvoice);
-    });
-
-    await AppStorage.saveSales();
-    await AppStorage.saveProducts();
-
-    if (!mounted) return;
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (ctx) => Directionality(textDirection: TextDirection.rtl, child: ThermalReceiptDialog(invoice: newInvoice)),
-    ).then((_) => setState(() => cart.clear()));
+      builder: (ctx) => Directionality(
+        textDirection: TextDirection.rtl,
+        child: AlertDialog(
+          backgroundColor: Colors.white,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          title: const Row(
+            children: [
+              Icon(Icons.receipt_long, color: Colors.black),
+              SizedBox(width: 8),
+              Text('مراجعة وتأكيد الفاتورة', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 16)),
+            ],
+          ),
+          content: SizedBox(
+            width: 330,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(AppState.storeName, style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 15)),
+                  Text(AppState.storePhone, style: const TextStyle(color: Colors.black87, fontSize: 11)),
+                  const Divider(color: Colors.black87),
+                  ...cart.map((item) => Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 2),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text('${item.product.name} (x${item.qty})', style: const TextStyle(color: Colors.black, fontSize: 12)),
+                            Text('${item.subtotal.toInt()} د.ع', style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 12)),
+                          ],
+                        ),
+                      )),
+                  const Divider(color: Colors.black87),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text('المجموع الإجمالي المطلوب:', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
+                      Text('${cartTotal.toInt()} د.ع', style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 16)),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            // زر إلغاء البيع إذا رفض الزبون الطلب
+            OutlinedButton.icon(
+              style: OutlinedButton.styleFrom(foregroundColor: Colors.red),
+              icon: const Icon(Icons.cancel, color: Colors.red, size: 18),
+              label: const Text('إلغاء البيع (رفض الزبون)'),
+              onPressed: () {
+                Navigator.pop(ctx);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('تم إلغاء البيع ولم يتم خصم أي مادة من المخزن!'), backgroundColor: Colors.orange),
+                );
+              },
+            ),
+            // زر تأكيد البيع والطباعة
+            ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.black, foregroundColor: Colors.white),
+              icon: const Icon(Icons.print, size: 18),
+              label: const Text('تأكيد البيع وطباعة'),
+              onPressed: () async {
+                // خصم المخزون بعد التأكيد فقط
+                for (var cartItem in cart) {
+                  if (!cartItem.product.isService) {
+                    cartItem.product.stock -= cartItem.qty;
+                  }
+                }
+
+                AppState.invoiceCounter++;
+                AppState.sales.insert(0, tempInvoice);
+                await AppStorage.saveSales();
+                await AppStorage.saveProducts();
+
+                if (!mounted) return;
+                Navigator.pop(ctx);
+
+                // فتح وصل الطباعة النهائي
+                showDialog(
+                  context: context,
+                  builder: (_) => Directionality(textDirection: TextDirection.rtl, child: ThermalReceiptDialog(invoice: tempInvoice)),
+                );
+
+                setState(() => cart.clear());
+              },
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   @override
@@ -1184,7 +1377,7 @@ class _PosScreenState extends State<PosScreen> {
         actions: [
           IconButton(
             icon: const Icon(Icons.settings, color: LuxuryClinicCashierApp.gold),
-            tooltip: 'الضبط والبروفايل',
+            tooltip: 'الضبط والخيارات والبروفايل',
             onPressed: () {
               Navigator.push(
                 context,
@@ -1328,6 +1521,8 @@ class _PosScreenState extends State<PosScreen> {
               },
             ),
           ),
+
+          // السلة السفلية مع زر إفراغ السلة وزر البيع
           Container(
             padding: const EdgeInsets.all(14),
             decoration: const BoxDecoration(
@@ -1338,7 +1533,24 @@ class _PosScreenState extends State<PosScreen> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                if (cart.isNotEmpty)
+                if (cart.isNotEmpty) ...[
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text('محتويات الفاتورة (${cart.length})', style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                      InkWell(
+                        onTap: _clearCartDialog,
+                        child: const Row(
+                          children: [
+                            Icon(Icons.delete_sweep, color: Colors.redAccent, size: 16),
+                            SizedBox(width: 4),
+                            Text('إفراغ السلة للخطأ', style: TextStyle(color: Colors.redAccent, fontSize: 11)),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
                   ConstrainedBox(
                     constraints: const BoxConstraints(maxHeight: 110),
                     child: ListView.builder(
@@ -1389,6 +1601,7 @@ class _PosScreenState extends State<PosScreen> {
                       },
                     ),
                   ),
+                ],
                 const Divider(color: LuxuryClinicCashierApp.darkBorder),
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -1409,8 +1622,8 @@ class _PosScreenState extends State<PosScreen> {
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                   ),
                   icon: const Icon(Icons.print, color: Colors.black),
-                  label: Text('إتمام البيع وطباعة الفاتورة (${cart.length})', style: const TextStyle(fontWeight: FontWeight.bold)),
-                  onPressed: cart.isEmpty ? null : _completeSaleAndPrint,
+                  label: Text('إتمام البيع والطباعة (${cart.length})', style: const TextStyle(fontWeight: FontWeight.bold)),
+                  onPressed: cart.isEmpty ? null : _openCheckoutDialog,
                 ),
               ],
             ),
@@ -1778,15 +1991,65 @@ class _PurchasesScreenState extends State<PurchasesScreen> {
 }
 
 // -------------------------------------------------------------
-// 4. سجل المبيعات والفواتير
+// 4. سجل المبيعات والفواتير (مع فقرة الاسترجاع وإعادة المخزن)
 // -------------------------------------------------------------
-class SalesHistoryScreen extends StatelessWidget {
+class SalesHistoryScreen extends StatefulWidget {
   const SalesHistoryScreen({super.key});
+
+  @override
+  State<SalesHistoryScreen> createState() => _SalesHistoryScreenState();
+}
+
+class _SalesHistoryScreenState extends State<SalesHistoryScreen> {
+  // استرجاع الفاتورة وإعادة بضاعتها للمخزن
+  void _refundInvoiceDialog(SaleInvoice invoice) {
+    showDialog(
+      context: context,
+      builder: (ctx) => Directionality(
+        textDirection: TextDirection.rtl,
+        child: AlertDialog(
+          backgroundColor: LuxuryClinicCashierApp.darkCard,
+          title: const Text('استرجاع الفاتورة وإعادة البضاعة', style: TextStyle(color: Colors.orangeAccent)),
+          content: Text('هل أنت متأكد من استرجاع الفاتورة رقم (${invoice.invoiceNumber}) بمبلغ ${invoice.totalAmount.toInt()} د.ع؟\nسيتم إرجاع كميات المواد المباعة إلى المخزن تلقائياً.'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('إلغاء')),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.orangeAccent, foregroundColor: Colors.black),
+              onPressed: () async {
+                // إعادة الكميات إلى المخزون
+                for (var item in invoice.items) {
+                  final pIndex = AppState.products.indexWhere((p) => p.id == item.product.id);
+                  if (pIndex != -1 && !AppState.products[pIndex].isService) {
+                    AppState.products[pIndex].stock += item.qty;
+                  }
+                }
+
+                setState(() {
+                  invoice.isReturned = true;
+                  invoice.returnDate = DateTime.now();
+                });
+
+                await AppStorage.saveSales();
+                await AppStorage.saveProducts();
+
+                if (!mounted) return;
+                Navigator.pop(ctx);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('تم استرجاع الفاتورة وإعادة المواد للمخزن بنجاح!'), backgroundColor: Colors.green),
+                );
+              },
+              child: const Text('تأكيد الاسترجاع'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('سجل المبيعات والفواتير')),
+      appBar: AppBar(title: const Text('سجل المبيعات واسترجاع الفواتير')),
       body: AppState.sales.isEmpty
           ? const Center(child: Text('لا توجد مبيعات مسجلة حتى الآن.', style: TextStyle(color: Colors.grey)))
           : ListView.separated(
@@ -1800,25 +2063,59 @@ class SalesHistoryScreen extends StatelessWidget {
                   decoration: BoxDecoration(
                     color: LuxuryClinicCashierApp.darkCard,
                     borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: LuxuryClinicCashierApp.darkBorder),
+                    border: Border.all(
+                      color: invoice.isReturned ? Colors.redAccent.withOpacity(0.5) : LuxuryClinicCashierApp.darkBorder,
+                    ),
                   ),
-                  child: ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    title: Text('${invoice.invoiceNumber} — ${invoice.totalAmount.toInt()} د.ع',
-                        style: const TextStyle(fontWeight: FontWeight.bold, color: LuxuryClinicCashierApp.gold)),
-                    subtitle: Text(
-                      'الكاشير: ${invoice.cashierName} (@${invoice.cashierUsername})\nالتاريخ: ${invoice.date.year}/${invoice.date.month}/${invoice.date.day}',
-                      style: const TextStyle(fontSize: 11, color: Colors.grey),
-                    ),
-                    trailing: IconButton(
-                      icon: const Icon(Icons.print, color: Colors.white),
-                      onPressed: () {
-                        showDialog(
-                          context: context,
-                          builder: (_) => Directionality(textDirection: TextDirection.rtl, child: ThermalReceiptDialog(invoice: invoice)),
-                        );
-                      },
-                    ),
+                  child: Column(
+                    children: [
+                      ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: Row(
+                          children: [
+                            Text('${invoice.invoiceNumber} — ${invoice.totalAmount.toInt()} د.ع',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  color: invoice.isReturned ? Colors.grey : LuxuryClinicCashierApp.gold,
+                                  decoration: invoice.isReturned ? TextDecoration.lineThrough : null,
+                                )),
+                            if (invoice.isReturned) ...[
+                              const SizedBox(width: 8),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                decoration: BoxDecoration(color: Colors.redAccent.withOpacity(0.2), borderRadius: BorderRadius.circular(6)),
+                                child: const Text('مسترجعة', style: TextStyle(color: Colors.redAccent, fontSize: 10, fontWeight: FontWeight.bold)),
+                              ),
+                            ],
+                          ],
+                        ),
+                        subtitle: Text(
+                          'الكاشير: ${invoice.cashierName} (@${invoice.cashierUsername})\nالتاريخ: ${invoice.date.year}/${invoice.date.month}/${invoice.date.day} ${invoice.date.hour}:${invoice.date.minute}',
+                          style: const TextStyle(fontSize: 11, color: Colors.grey),
+                        ),
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            IconButton(
+                              icon: const Icon(Icons.print, color: Colors.white),
+                              tooltip: 'طباعة الفاتورة',
+                              onPressed: () {
+                                showDialog(
+                                  context: context,
+                                  builder: (_) => Directionality(textDirection: TextDirection.rtl, child: ThermalReceiptDialog(invoice: invoice)),
+                                );
+                              },
+                            ),
+                            if (!invoice.isReturned)
+                              IconButton(
+                                icon: const Icon(Icons.assignment_return, color: Colors.orangeAccent),
+                                tooltip: 'استرجاع الفاتورة وإعادة المواد للمخزن',
+                                onPressed: () => _refundInvoiceDialog(invoice),
+                              ),
+                          ],
+                        ),
+                      ),
+                    ],
                   ),
                 );
               },
@@ -1844,13 +2141,15 @@ class _AdminMonthlyAuditScreenState extends State<AdminMonthlyAuditScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // تصفية الفواتير واستثناء المسترجعة من الأرباح الصافية
     final filteredSales = AppState.sales.where((s) {
       final matchDate = s.date.year == selectedYear && s.date.month == selectedMonth;
       if (selectedUsername == null) return matchDate;
       return matchDate && s.cashierUsername == selectedUsername;
     }).toList();
 
-    final totalRevenue = filteredSales.fold(0.0, (sum, s) => sum + s.totalAmount);
+    final netRevenue = filteredSales.where((s) => !s.isReturned).fold(0.0, (sum, s) => sum + s.totalAmount);
+    final returnedTotal = filteredSales.where((s) => s.isReturned).fold(0.0, (sum, s) => sum + s.totalAmount);
     final totalPurchases = AppState.purchases.fold(0.0, (sum, p) => sum + p.totalCost);
 
     return Scaffold(
@@ -1907,41 +2206,61 @@ class _AdminMonthlyAuditScreenState extends State<AdminMonthlyAuditScreen> {
           ),
           Padding(
             padding: const EdgeInsets.all(12),
-            child: Row(
+            child: Column(
               children: [
-                Expanded(
-                  child: Container(
-                    padding: const EdgeInsets.all(14),
-                    decoration: BoxDecoration(
-                      color: LuxuryClinicCashierApp.darkCard,
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: LuxuryClinicCashierApp.gold),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Container(
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: LuxuryClinicCashierApp.darkCard,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: LuxuryClinicCashierApp.gold),
+                        ),
+                        child: Column(
+                          children: [
+                            const Text('صافي مبيعات الشهر (بدون المرتجع)', style: TextStyle(color: Colors.grey, fontSize: 11)),
+                            const SizedBox(height: 4),
+                            Text('${netRevenue.toInt()} د.ع', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: LuxuryClinicCashierApp.gold)),
+                          ],
+                        ),
+                      ),
                     ),
-                    child: Column(
-                      children: [
-                        const Text('مبيعات الشهر المحدد', style: TextStyle(color: Colors.grey, fontSize: 11)),
-                        const SizedBox(height: 4),
-                        Text('${totalRevenue.toInt()} د.ع', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: LuxuryClinicCashierApp.gold)),
-                      ],
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Container(
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: LuxuryClinicCashierApp.darkCard,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: Colors.orangeAccent.withOpacity(0.5)),
+                        ),
+                        child: Column(
+                          children: [
+                            const Text('إجمالي المبالغ المسترجعة', style: TextStyle(color: Colors.grey, fontSize: 11)),
+                            const SizedBox(height: 4),
+                            Text('${returnedTotal.toInt()} د.ع', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.orangeAccent)),
+                          ],
+                        ),
+                      ),
                     ),
-                  ),
+                  ],
                 ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Container(
-                    padding: const EdgeInsets.all(14),
-                    decoration: BoxDecoration(
-                      color: LuxuryClinicCashierApp.darkCard,
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: Colors.redAccent.withOpacity(0.5)),
-                    ),
-                    child: Column(
-                      children: [
-                        const Text('إجمالي تكلفة المشتريات', style: TextStyle(color: Colors.grey, fontSize: 11)),
-                        const SizedBox(height: 4),
-                        Text('${totalPurchases.toInt()} د.ع', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.redAccent)),
-                      ],
-                    ),
+                const SizedBox(height: 8),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: LuxuryClinicCashierApp.darkCard,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.redAccent.withOpacity(0.4)),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text('إجمالي تكلفة المشتريات من المذاخر:', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                      Text('${totalPurchases.toInt()} د.ع', style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.redAccent)),
+                    ],
                   ),
                 ),
               ],
@@ -1961,7 +2280,7 @@ class _AdminMonthlyAuditScreenState extends State<AdminMonthlyAuditScreen> {
                         decoration: BoxDecoration(
                           color: LuxuryClinicCashierApp.darkCard,
                           borderRadius: BorderRadius.circular(10),
-                          border: Border.all(color: LuxuryClinicCashierApp.darkBorder),
+                          border: Border.all(color: s.isReturned ? Colors.redAccent.withOpacity(0.4) : LuxuryClinicCashierApp.darkBorder),
                         ),
                         child: Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -1973,7 +2292,14 @@ class _AdminMonthlyAuditScreenState extends State<AdminMonthlyAuditScreen> {
                                 Text('التاريخ: ${s.date.year}/${s.date.month}/${s.date.day}', style: const TextStyle(color: Colors.grey, fontSize: 11)),
                               ],
                             ),
-                            Text('${s.totalAmount.toInt()} د.ع', style: const TextStyle(color: LuxuryClinicCashierApp.gold, fontWeight: FontWeight.bold)),
+                            Text(
+                              '${s.totalAmount.toInt()} د.ع ${s.isReturned ? "(مسترجع)" : ""}',
+                              style: TextStyle(
+                                color: s.isReturned ? Colors.redAccent : LuxuryClinicCashierApp.gold,
+                                fontWeight: FontWeight.bold,
+                                decoration: s.isReturned ? TextDecoration.lineThrough : null,
+                              ),
+                            ),
                           ],
                         ),
                       );
@@ -2008,7 +2334,7 @@ class _UserPersonalAuditScreenState extends State<UserPersonalAuditScreen> {
       return s.date.year == selectedYear && s.date.month == selectedMonth && s.cashierUsername == currentUsername;
     }).toList();
 
-    final myTotalRevenue = mySales.fold(0.0, (sum, s) => sum + s.totalAmount);
+    final myNetRevenue = mySales.where((s) => !s.isReturned).fold(0.0, (sum, s) => sum + s.totalAmount);
 
     return Scaffold(
       appBar: AppBar(title: const Text('جردي الشهري الشخصي')),
@@ -2028,14 +2354,14 @@ class _UserPersonalAuditScreenState extends State<UserPersonalAuditScreen> {
                 children: [
                   Column(
                     children: [
-                      const Text('مجموع مبيعاتي للشهر', style: TextStyle(color: Colors.grey, fontSize: 12)),
+                      const Text('صافي مبيعاتي للشهر', style: TextStyle(color: Colors.grey, fontSize: 12)),
                       const SizedBox(height: 4),
-                      Text('${myTotalRevenue.toInt()} د.ع', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: LuxuryClinicCashierApp.gold)),
+                      Text('${myNetRevenue.toInt()} د.ع', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: LuxuryClinicCashierApp.gold)),
                     ],
                   ),
                   Column(
                     children: [
-                      const Text('عدد فواتيري', style: TextStyle(color: Colors.grey, fontSize: 12)),
+                      const Text('عدد الفواتير الكلي', style: TextStyle(color: Colors.grey, fontSize: 12)),
                       const SizedBox(height: 4),
                       Text('${mySales.length}', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
                     ],
@@ -2058,13 +2384,20 @@ class _UserPersonalAuditScreenState extends State<UserPersonalAuditScreen> {
                         decoration: BoxDecoration(
                           color: LuxuryClinicCashierApp.darkCard,
                           borderRadius: BorderRadius.circular(10),
-                          border: Border.all(color: LuxuryClinicCashierApp.darkBorder),
+                          border: Border.all(color: s.isReturned ? Colors.redAccent.withOpacity(0.4) : LuxuryClinicCashierApp.darkBorder),
                         ),
                         child: Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
                             Text(s.invoiceNumber, style: const TextStyle(fontWeight: FontWeight.bold)),
-                            Text('${s.totalAmount.toInt()} د.ع', style: const TextStyle(color: LuxuryClinicCashierApp.gold, fontWeight: FontWeight.bold)),
+                            Text(
+                              '${s.totalAmount.toInt()} د.ع ${s.isReturned ? "(مسترجع)" : ""}',
+                              style: TextStyle(
+                                color: s.isReturned ? Colors.redAccent : LuxuryClinicCashierApp.gold,
+                                fontWeight: FontWeight.bold,
+                                decoration: s.isReturned ? TextDecoration.lineThrough : null,
+                              ),
+                            ),
                           ],
                         ),
                       );
@@ -2281,7 +2614,7 @@ class ThermalReceiptDialog extends StatelessWidget {
               ),
               Align(
                 alignment: Alignment.centerRight,
-                child: Text('الكاشير المسؤول: ${invoice.cashierName}', style: const TextStyle(color: Colors.black, fontSize: 11)),
+                child: Text('الكاشير: ${invoice.cashierName}', style: const TextStyle(color: Colors.black, fontSize: 11)),
               ),
               const Divider(color: Colors.black54),
               ...invoice.items.map((item) => Padding(
@@ -2310,8 +2643,13 @@ class ThermalReceiptDialog extends StatelessWidget {
                   Text('${invoice.totalAmount.toInt()} د.ع', style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 16)),
                 ],
               ),
-              const SizedBox(height: 8),
-              const Text('شكراً لزيارتكم — نتمنى لكم دوام العافية', style: TextStyle(color: Colors.black54, fontSize: 10, fontStyle: FontStyle.italic)),
+              const SizedBox(height: 10),
+              // ملاحظة أسفل الفاتورة المعتمدة من الإعدادات
+              Text(
+                AppState.receiptFooterNote,
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.black54, fontSize: 10, fontStyle: FontStyle.italic),
+              ),
               const SizedBox(height: 14),
               ElevatedButton.icon(
                 style: ElevatedButton.styleFrom(backgroundColor: Colors.black, foregroundColor: Colors.white),
@@ -2320,7 +2658,7 @@ class ThermalReceiptDialog extends StatelessWidget {
                 onPressed: () {
                   Navigator.pop(context);
                   ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('تم إرسال أمر الطباعة مع ترويسة العيادة بنجاح 🖨️'), backgroundColor: Colors.green),
+                    const SnackBar(content: Text('تم إرسال أمر الطباعة بنجاح 🖨️'), backgroundColor: Colors.green),
                   );
                 },
               ),
