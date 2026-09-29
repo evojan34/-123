@@ -58,7 +58,7 @@ class AppUser {
 class Product {
   final String id;
   String name;
-  String barcode; // رقم الباركود
+  String barcode;
   double price;
   int stock;
   final int minStock;
@@ -207,7 +207,7 @@ class PurchaseRecord {
 }
 
 // -------------------------------------------------------------
-// شاشة قارئ الباركود بالكاميرا (سريعة ودقيقة)
+// شاشة قارئ الباركود بالكاميرا
 // -------------------------------------------------------------
 class BarcodeScannerScreen extends StatefulWidget {
   final String title;
@@ -218,9 +218,7 @@ class BarcodeScannerScreen extends StatefulWidget {
 }
 
 class _BarcodeScannerScreenState extends State<BarcodeScannerScreen> {
-  final MobileScannerController _controller = MobileScannerController(
-    detectionSpeed: DetectionSpeed.noDuplicates,
-  );
+  final MobileScannerController _controller = MobileScannerController();
   bool _scanned = false;
 
   @override
@@ -248,17 +246,16 @@ class _BarcodeScannerScreenState extends State<BarcodeScannerScreen> {
             controller: _controller,
             onDetect: (capture) {
               if (_scanned) return;
-              final List<Barcode> barcodes = capture.barcodes;
-              for (final barcode in barcodes) {
-                if (barcode.rawValue != null && barcode.rawValue!.isNotEmpty) {
+              for (final barcode in capture.barcodes) {
+                final String? code = barcode.rawValue;
+                if (code != null && code.isNotEmpty) {
                   _scanned = true;
-                  Navigator.pop(context, barcode.rawValue);
+                  Navigator.pop(context, code);
                   break;
                 }
               }
             },
           ),
-          // إطار بصري لموقع المسح
           Container(
             width: 260,
             height: 180,
@@ -354,11 +351,11 @@ class XprinterHelper {
 // التخزين الدائم
 // -------------------------------------------------------------
 class AppStorage {
-  static const String _usersKey = 'app_users_v11';
-  static const String _productsKey = 'app_products_v11';
-  static const String _salesKey = 'app_sales_v11';
-  static const String _purchasesKey = 'app_purchases_v11';
-  static const String _recoveryKey = 'app_recovery_v11';
+  static const String _usersKey = 'app_users_v13';
+  static const String _productsKey = 'app_products_v13';
+  static const String _salesKey = 'app_sales_v13';
+  static const String _purchasesKey = 'app_purchases_v13';
+  static const String _recoveryKey = 'app_recovery_v13';
   static const String _storeNameKey = 'app_store_name';
   static const String _storePhoneKey = 'app_store_phone';
   static const String _storeAddressKey = 'app_store_address';
@@ -823,7 +820,7 @@ class _LoginScreenState extends State<LoginScreen> {
 }
 
 // -------------------------------------------------------------
-// شاشة الضبط وإعدادات العيادة
+// شاشة الضبط والبروفايل وإعدادات Xprinter
 // -------------------------------------------------------------
 class ProfileSettingsScreen extends StatefulWidget {
   const ProfileSettingsScreen({super.key});
@@ -884,7 +881,7 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
 
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('تم حفظ الإعدادات وعنوان الطابعة بنجاح!'), backgroundColor: Colors.green),
+      const SnackBar(content: Text('تم حفظ الإعدادات بنجاح!'), backgroundColor: Colors.green),
     );
     setState(() {});
   }
@@ -1046,7 +1043,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
 }
 
 // -------------------------------------------------------------
-// 1. شاشة البيع والكاشير (مع ميزة البيع المباشر بالباركود)
+// 1. شاشة البيع والكاشير
 // -------------------------------------------------------------
 class PosScreen extends StatefulWidget {
   const PosScreen({super.key});
@@ -1086,7 +1083,6 @@ class _PosScreenState extends State<PosScreen> {
     });
   }
 
-  // مسح باركود المنتج لإضافته فوراً للسلة
   void _scanBarcodeForSale() async {
     final scannedBarcode = await Navigator.push<String>(
       context,
@@ -1242,14 +1238,12 @@ class _PosScreenState extends State<PosScreen> {
                   const SizedBox(height: 10),
                   TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'اسم المادة أو الخدمة')),
                   const SizedBox(height: 8),
-                  // خانة الباركود مع زر المسح بالكاميرا
                   TextField(
                     controller: barcodeCtrl,
                     decoration: InputDecoration(
                       labelText: 'رقم الباركود',
                       suffixIcon: IconButton(
                         icon: const Icon(Icons.qr_code_scanner, color: LuxuryClinicCashierApp.gold),
-                        tooltip: 'مسح الباركود بالكاميرا',
                         onPressed: () async {
                           final code = await Navigator.push<String>(
                             context,
@@ -1598,7 +1592,6 @@ class _PosScreenState extends State<PosScreen> {
       ),
       body: Column(
         children: [
-          // شريط البحث المزدوج مع زر قارئ الباركود للبيع السريع
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
             child: Row(
@@ -1616,7 +1609,6 @@ class _PosScreenState extends State<PosScreen> {
                   ),
                 ),
                 const SizedBox(width: 8),
-                // زر مسح الباركود للبيع المباشر بالكاميرا
                 Container(
                   decoration: BoxDecoration(
                     color: LuxuryClinicCashierApp.gold,
@@ -1867,7 +1859,7 @@ class _PosScreenState extends State<PosScreen> {
 }
 
 // -------------------------------------------------------------
-// 2. شاشة المخزن (مع مسح وتحديث الباركود)
+// 2. شاشة المخزن
 // -------------------------------------------------------------
 class InventoryScreen extends StatefulWidget {
   const InventoryScreen({super.key});
@@ -2837,7 +2829,7 @@ class _ThermalReceiptDialogState extends State<ThermalReceiptDialog> {
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('تعذر الاتصال بالطابعة على الآيبي (${AppState.printerIp})، تأكد من ربط الكيبل بالراوتر وتحديث الآيبي في الضبط.'),
+            content: Text('تعذر الاتصال بالطابعة على الآيبي (${AppState.printerIp})، تأكد من ربط الكيبل وتحديث الآيبي في الضبط.'),
             backgroundColor: Colors.redAccent,
             duration: const Duration(seconds: 4),
           ),
