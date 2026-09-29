@@ -1,8 +1,10 @@
-name: Flutter Build APK
+name: Build Clinic Cashier APK
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
@@ -10,37 +12,42 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout Code
-      uses: actions/checkout@v4
+      - name: Checkout Code
+        uses: actions/checkout@v4
 
-    - name: Set up Java
-      uses: actions/setup-java@v4
-      with:
-        distribution: 'temurin'
-        java-version: '17'
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
 
-    - name: Set up Flutter
-      uses: subosito/flutter-action@v2
-      with:
-        flutter-version: '3.19.x'
-        channel: 'stable'
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.19.6'
+          channel: 'stable'
+          cache: true
 
-    - name: Setup Full Project Structure
-      run: |
-        # إنشاء مشروع فلاتر كامل وجديد لإنشاء ملفات أندرويد تلقائياً
-        flutter create --project-name mobile_clinic_cashier --org com.clinic.pos temp_app
-        # نقل ملفات أندرويد الرسمية إلى المستودع
-        cp -r temp_app/android ./
-        rm -rf temp_app
+      - name: Install dependencies
+        run: flutter pub get
 
-    - name: Install dependencies
-      run: flutter pub get
+      - name: Configure Android Project & Fix Min SDK to 21
+        run: |
+          # إنشاء ملفات أندرويد إن لم تكن موجودة مسبقاً
+          if [ ! -d "android" ]; then
+            flutter create . --platforms android
+          fi
+          # ترقية minSdkVersion إلى 21 لتتوافق مع قارئ الباركود
+          sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 21/g' android/app/build.gradle || true
+          sed -i 's/minSdkVersion = flutter.minSdkVersion/minSdkVersion = 21/g' android/app/build.gradle || true
+          sed -i 's/minSdkVersion [0-9]*/minSdkVersion 21/g' android/app/build.gradle || true
+          sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 21/g' android/app/build.gradle || true
 
-    - name: Build APK
-      run: flutter build apk --release
+      - name: Build APK
+        run: flutter build apk --release
 
-    - name: Upload APK
-      uses: actions/upload-artifact@v4
-      with:
-        name: clinic-pos-release-apk
-        path: build/app/outputs/flutter-apk/app-release.apk
+      - name: Upload APK File
+        uses: actions/upload-artifact@v4
+        with:
+          name: clinic-cashier-app
+          path: build/app/outputs/flutter-apk/app-release.apk
