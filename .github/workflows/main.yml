@@ -33,11 +33,11 @@ jobs:
 
       - name: Configure Android Project & Fix Min SDK to 21
         run: |
-          # إنشاء ملفات أندرويد إن لم تكن موجودة مسبقاً
+          # إنشاء مجلد الأندرويد باسم حزمة صالح يتجاهل علامة السالب في اسم المستودع
           if [ ! -d "android" ]; then
-            flutter create . --platforms android
+            flutter create . --project-name clinic_cashier_app --platforms android
           fi
-          # ترقية minSdkVersion إلى 21 لتتوافق مع قارئ الباركود
+          # رفع الحد الأدنى لنظام أندرويد إلى 21 لتشغيل قارئ الباركود
           sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 21/g' android/app/build.gradle || true
           sed -i 's/minSdkVersion = flutter.minSdkVersion/minSdkVersion = 21/g' android/app/build.gradle || true
           sed -i 's/minSdkVersion [0-9]*/minSdkVersion 21/g' android/app/build.gradle || true
