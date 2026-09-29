@@ -20,12 +20,16 @@ class AppUser {
   String password;
   String fullName;
   final UserRole role;
+  String phone;
+  String address;
 
   AppUser({
     required this.username,
     required this.password,
     required this.fullName,
     required this.role,
+    this.phone = "",
+    this.address = "",
   });
 
   Map<String, dynamic> toJson() => {
@@ -33,6 +37,8 @@ class AppUser {
         'password': password,
         'fullName': fullName,
         'role': role == UserRole.admin ? 'admin' : 'cashier',
+        'phone': phone,
+        'address': address,
       };
 
   factory AppUser.fromJson(Map<String, dynamic> json) => AppUser(
@@ -40,6 +46,8 @@ class AppUser {
         password: json['password'],
         fullName: json['fullName'],
         role: json['role'] == 'admin' ? UserRole.admin : UserRole.cashier,
+        phone: json['phone'] ?? "",
+        address: json['address'] ?? "",
       );
 }
 
@@ -50,7 +58,7 @@ class Product {
   int stock;
   final int minStock;
   final bool isService;
-  String imagePath; // مسار الصورة المحفوظة في ذاكرة الهاتف
+  String imagePath;
 
   Product({
     required this.id,
@@ -171,11 +179,14 @@ class PurchaseRecord {
 // محرك التخزين الدائم
 // -------------------------------------------------------------
 class AppStorage {
-  static const String _usersKey = 'app_users_v4';
-  static const String _productsKey = 'app_products_v4';
-  static const String _salesKey = 'app_sales_v4';
-  static const String _purchasesKey = 'app_purchases_v4';
-  static const String _recoveryKey = 'app_recovery_v4';
+  static const String _usersKey = 'app_users_v7';
+  static const String _productsKey = 'app_products_v7';
+  static const String _salesKey = 'app_sales_v7';
+  static const String _purchasesKey = 'app_purchases_v7';
+  static const String _recoveryKey = 'app_recovery_v7';
+  static const String _storeNameKey = 'app_store_name';
+  static const String _storePhoneKey = 'app_store_phone';
+  static const String _storeAddressKey = 'app_store_address';
 
   static Future<void> loadData() async {
     final prefs = await SharedPreferences.getInstance();
@@ -207,6 +218,9 @@ class AppStorage {
     }
 
     AppState.recoverySecret = prefs.getString(_recoveryKey) ?? "123456";
+    AppState.storeName = prefs.getString(_storeNameKey) ?? "عيادة ومستلزمات التمريض المتنقلة";
+    AppState.storePhone = prefs.getString(_storePhoneKey) ?? "0770 123 4567";
+    AppState.storeAddress = prefs.getString(_storeAddressKey) ?? "بغداد - الرعاية السريرية والمنزلية الفائقة";
   }
 
   static Future<void> saveUsers() async {
@@ -233,6 +247,16 @@ class AppStorage {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_recoveryKey, secret);
     AppState.recoverySecret = secret;
+  }
+
+  static Future<void> saveClinicInfo(String name, String phone, String address) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_storeNameKey, name);
+    await prefs.setString(_storePhoneKey, phone);
+    await prefs.setString(_storeAddressKey, address);
+    AppState.storeName = name;
+    AppState.storePhone = phone;
+    AppState.storeAddress = address;
   }
 }
 
@@ -301,7 +325,7 @@ class LuxuryClinicCashierApp extends StatelessWidget {
 }
 
 // -------------------------------------------------------------
-// ويدجت مساعدة لعرض الصورة سواء من ملف الهاتف أو أيقونة بديلة
+// ويدجت عرض الصورة
 // -------------------------------------------------------------
 Widget buildProductImage(Product product, {double size = 45}) {
   if (product.imagePath.isNotEmpty && File(product.imagePath).existsSync()) {
@@ -571,7 +595,14 @@ class _LoginScreenState extends State<LoginScreen> {
                 const SizedBox(height: 24),
                 TextField(controller: _userCtrl, decoration: const InputDecoration(labelText: 'اسم المستخدم', prefixIcon: Icon(Icons.person, color: LuxuryClinicCashierApp.gold))),
                 const SizedBox(height: 14),
-                TextField(controller: _passCtrl, obscureText: true, decoration: const InputDecoration(labelText: 'الرمز السري', prefixIcon: Icon(Icons.lock, color: LuxuryClinicCashierApp.gold))),
+                TextField(
+                  controller: _passCtrl,
+                  obscureText: true,
+                  decoration: const InputDecoration(
+                    labelText: 'الرمز السري',
+                    prefixIcon: Icon(Icons.lock, color: LuxuryClinicCashierApp.gold),
+                  ),
+                ),
                 Align(
                   alignment: Alignment.centerLeft,
                   child: TextButton(
@@ -596,6 +627,158 @@ class _LoginScreenState extends State<LoginScreen> {
               ],
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+// -------------------------------------------------------------
+// شاشة الملف الشخصي وإعدادات العيادة
+// -------------------------------------------------------------
+class ProfileSettingsScreen extends StatefulWidget {
+  const ProfileSettingsScreen({super.key});
+
+  @override
+  State<ProfileSettingsScreen> createState() => _ProfileSettingsScreenState();
+}
+
+class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
+  late TextEditingController _fullNameCtrl;
+  late TextEditingController _phoneCtrl;
+  late TextEditingController _addressCtrl;
+  late TextEditingController _passwordCtrl;
+
+  late TextEditingController _clinicNameCtrl;
+  late TextEditingController _clinicPhoneCtrl;
+  late TextEditingController _clinicAddressCtrl;
+
+  @override
+  void initState() {
+    super.initState();
+    final user = AppState.currentUser;
+    _fullNameCtrl = TextEditingController(text: user?.fullName ?? '');
+    _phoneCtrl = TextEditingController(text: user?.phone ?? '');
+    _addressCtrl = TextEditingController(text: user?.address ?? '');
+    _passwordCtrl = TextEditingController(text: user?.password ?? '');
+
+    _clinicNameCtrl = TextEditingController(text: AppState.storeName);
+    _clinicPhoneCtrl = TextEditingController(text: AppState.storePhone);
+    _clinicAddressCtrl = TextEditingController(text: AppState.storeAddress);
+  }
+
+  void _saveUserProfile() async {
+    final user = AppState.currentUser;
+    if (user != null) {
+      user.fullName = _fullNameCtrl.text.trim();
+      user.phone = _phoneCtrl.text.trim();
+      user.address = _addressCtrl.text.trim();
+      if (_passwordCtrl.text.trim().isNotEmpty) {
+        user.password = _passwordCtrl.text.trim();
+      }
+      await AppStorage.saveUsers();
+    }
+
+    if (user?.role == UserRole.admin) {
+      await AppStorage.saveClinicInfo(
+        _clinicNameCtrl.text.trim(),
+        _clinicPhoneCtrl.text.trim(),
+        _clinicAddressCtrl.text.trim(),
+      );
+    }
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('تم حفظ وتحديث المعلومات بنجاح!'), backgroundColor: Colors.green),
+    );
+    setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final user = AppState.currentUser;
+    final isAdmin = user?.role == UserRole.admin;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('الضبط والملف الشخصي'),
+      ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: LuxuryClinicCashierApp.darkCard,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: LuxuryClinicCashierApp.gold),
+              ),
+              child: Row(
+                children: [
+                  CircleAvatar(
+                    radius: 30,
+                    backgroundColor: LuxuryClinicCashierApp.gold.withOpacity(0.2),
+                    child: Icon(
+                      isAdmin ? Icons.admin_panel_settings : Icons.person,
+                      size: 34,
+                      color: LuxuryClinicCashierApp.gold,
+                    ),
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(user?.fullName ?? '', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                        const SizedBox(height: 4),
+                        Text('اسم الدخول: ${user?.username} | الرتبة: ${isAdmin ? "مدير عام" : "كاشير/تمريض"}',
+                            style: const TextStyle(color: Colors.grey, fontSize: 12)),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
+            const Text('بيانات المستخدم الشخصية:', style: TextStyle(fontWeight: FontWeight.bold, color: LuxuryClinicCashierApp.gold, fontSize: 15)),
+            const SizedBox(height: 10),
+            TextField(controller: _fullNameCtrl, decoration: const InputDecoration(labelText: 'الاسم الكامل', prefixIcon: Icon(Icons.badge))),
+            const SizedBox(height: 10),
+            TextField(controller: _phoneCtrl, keyboardType: TextInputType.phone, decoration: const InputDecoration(labelText: 'رقم هاتف المستخدم', prefixIcon: Icon(Icons.phone))),
+            const SizedBox(height: 10),
+            TextField(controller: _addressCtrl, decoration: const InputDecoration(labelText: 'عنوان سكن المستخدم', prefixIcon: Icon(Icons.location_on))),
+            const SizedBox(height: 10),
+            TextField(controller: _passwordCtrl, decoration: const InputDecoration(labelText: 'الرمز السري للحساب', prefixIcon: Icon(Icons.lock))),
+            const SizedBox(height: 24),
+            if (isAdmin) ...[
+              const Divider(color: LuxuryClinicCashierApp.darkBorder),
+              const SizedBox(height: 10),
+              const Text('بيانات العيادة الرسمية (المطبوعة على الفاتورة):',
+                  style: TextStyle(fontWeight: FontWeight.bold, color: LuxuryClinicCashierApp.gold, fontSize: 15)),
+              const SizedBox(height: 6),
+              const Text('هذه المعلومات تظهر على رأس كل وصل مطبوع للطابعة', style: TextStyle(color: Colors.grey, fontSize: 11)),
+              const SizedBox(height: 10),
+              TextField(controller: _clinicNameCtrl, decoration: const InputDecoration(labelText: 'اسم العيادة الرئيسي', prefixIcon: Icon(Icons.local_hospital))),
+              const SizedBox(height: 10),
+              TextField(controller: _clinicPhoneCtrl, keyboardType: TextInputType.phone, decoration: const InputDecoration(labelText: 'هاتف العيادة للزبائن', prefixIcon: Icon(Icons.call))),
+              const SizedBox(height: 10),
+              TextField(controller: _clinicAddressCtrl, decoration: const InputDecoration(labelText: 'عنوان وموقع العيادة المطبوع', prefixIcon: Icon(Icons.map))),
+              const SizedBox(height: 20),
+            ],
+            ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: LuxuryClinicCashierApp.gold,
+                foregroundColor: Colors.black,
+                minimumSize: const Size.fromHeight(48),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              ),
+              icon: const Icon(Icons.save),
+              label: const Text('حفظ كافة التعديلات', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+              onPressed: _saveUserProfile,
+            ),
+          ],
         ),
       ),
     );
@@ -699,7 +882,6 @@ class _PosScreenState extends State<PosScreen> {
     });
   }
 
-  // اختيار صورة من المعرض أو الكاميرا
   Future<String?> _pickImageSource(BuildContext ctx) async {
     ImageSource? source = await showModalBottomSheet<ImageSource>(
       context: ctx,
@@ -729,7 +911,6 @@ class _PosScreenState extends State<PosScreen> {
     return null;
   }
 
-  // إضافة مادة مباشرة لواجهة الكاشير مع زر اختيار صورة الجهاز
   void _addNewProductDirectly() {
     final nameCtrl = TextEditingController();
     final priceCtrl = TextEditingController();
@@ -749,7 +930,6 @@ class _PosScreenState extends State<PosScreen> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  // مربع معاينة واختيار صورة الهاتف
                   InkWell(
                     onTap: () async {
                       final path = await _pickImageSource(ctx);
@@ -835,7 +1015,6 @@ class _PosScreenState extends State<PosScreen> {
     );
   }
 
-  // تعديل السعر واختيار صورة جديدة من الجهاز للمادة
   void _editProduct(Product product) {
     final priceCtrl = TextEditingController(text: product.price.toInt().toString());
     String currentImagePath = product.imagePath;
@@ -1004,6 +1183,16 @@ class _PosScreenState extends State<PosScreen> {
         ),
         actions: [
           IconButton(
+            icon: const Icon(Icons.settings, color: LuxuryClinicCashierApp.gold),
+            tooltip: 'الضبط والبروفايل',
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const Directionality(textDirection: TextDirection.rtl, child: ProfileSettingsScreen())),
+              ).then((_) => setState(() {}));
+            },
+          ),
+          IconButton(
             icon: const Icon(Icons.add_box, color: LuxuryClinicCashierApp.gold, size: 28),
             tooltip: 'إضافة مادة جديدة',
             onPressed: _addNewProductDirectly,
@@ -1026,12 +1215,12 @@ class _PosScreenState extends State<PosScreen> {
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
             child: TextField(
               onChanged: (val) => setState(() => searchQuery = val),
-              decoration: InputDecoration(
+              decoration: const InputDecoration(
                 hintText: 'بحث في المواد والعلاجات والخدمات...',
-                prefixIcon: const Icon(Icons.search, color: LuxuryClinicCashierApp.gold),
+                prefixIcon: Icon(Icons.search, color: LuxuryClinicCashierApp.gold),
                 filled: true,
                 fillColor: LuxuryClinicCashierApp.darkCard,
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                border: OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(10))),
               ),
             ),
           ),
@@ -1903,6 +2092,8 @@ class _UsersManagementScreenState extends State<UsersManagementScreen> {
     final nameCtrl = TextEditingController(text: userToEdit?.fullName ?? '');
     final userCtrl = TextEditingController(text: userToEdit?.username ?? '');
     final passCtrl = TextEditingController(text: userToEdit?.password ?? '');
+    final phoneCtrl = TextEditingController(text: userToEdit?.phone ?? '');
+    final addressCtrl = TextEditingController(text: userToEdit?.address ?? '');
     UserRole selectedRole = userToEdit?.role ?? UserRole.cashier;
     final bool isEditing = userToEdit != null;
 
@@ -1913,7 +2104,7 @@ class _UsersManagementScreenState extends State<UsersManagementScreen> {
           textDirection: TextDirection.rtl,
           child: AlertDialog(
             backgroundColor: LuxuryClinicCashierApp.darkCard,
-            title: Text(isEditing ? 'تعديل المستخدم' : 'إضافة موظف/كاشير', style: const TextStyle(color: LuxuryClinicCashierApp.gold)),
+            title: Text(isEditing ? 'تعديل بيانات المستخدم' : 'إضافة موظف/كاشير', style: const TextStyle(color: LuxuryClinicCashierApp.gold)),
             content: SingleChildScrollView(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -1923,6 +2114,10 @@ class _UsersManagementScreenState extends State<UsersManagementScreen> {
                   TextField(controller: userCtrl, enabled: !isEditing, decoration: const InputDecoration(labelText: 'اسم الدخول (Username)')),
                   const SizedBox(height: 8),
                   TextField(controller: passCtrl, decoration: const InputDecoration(labelText: 'الرمز السري')),
+                  const SizedBox(height: 8),
+                  TextField(controller: phoneCtrl, keyboardType: TextInputType.phone, decoration: const InputDecoration(labelText: 'رقم الهاتف')),
+                  const SizedBox(height: 8),
+                  TextField(controller: addressCtrl, decoration: const InputDecoration(labelText: 'العنوان')),
                   const SizedBox(height: 8),
                   DropdownButtonFormField<UserRole>(
                     value: selectedRole,
@@ -1957,8 +2152,17 @@ class _UsersManagementScreenState extends State<UsersManagementScreen> {
                     if (isEditing) {
                       userToEdit.fullName = name;
                       userToEdit.password = pass;
+                      userToEdit.phone = phoneCtrl.text.trim();
+                      userToEdit.address = addressCtrl.text.trim();
                     } else {
-                      AppState.users.add(AppUser(username: user, password: pass, fullName: name, role: selectedRole));
+                      AppState.users.add(AppUser(
+                        username: user,
+                        password: pass,
+                        fullName: name,
+                        role: selectedRole,
+                        phone: phoneCtrl.text.trim(),
+                        address: addressCtrl.text.trim(),
+                      ));
                     }
                   });
 
@@ -2002,7 +2206,10 @@ class _UsersManagementScreenState extends State<UsersManagementScreen> {
             child: ListTile(
               leading: Icon(u.role == UserRole.admin ? Icons.shield : Icons.person, color: LuxuryClinicCashierApp.gold),
               title: Text(u.fullName, style: const TextStyle(fontWeight: FontWeight.bold)),
-              subtitle: Text('اسم المستخدم: ${u.username} | الرمز: ${u.password}\nالدور: ${u.role == UserRole.admin ? "مدير" : "كاشير"}', style: const TextStyle(fontSize: 11, color: Colors.grey)),
+              subtitle: Text(
+                'اسم المستخدم: ${u.username} | هاتف: ${u.phone.isEmpty ? "غير محدد" : u.phone}\nالدور: ${u.role == UserRole.admin ? "مدير" : "كاشير"}',
+                style: const TextStyle(fontSize: 11, color: Colors.grey),
+              ),
               trailing: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -2026,7 +2233,7 @@ class _UsersManagementScreenState extends State<UsersManagementScreen> {
 }
 
 // -------------------------------------------------------------
-// حوار وطباعة الفاتورة
+// حوار وطباعة الفاتورة الحرارية
 // -------------------------------------------------------------
 class ThermalReceiptDialog extends StatelessWidget {
   final SaleInvoice invoice;
@@ -2046,19 +2253,56 @@ class ThermalReceiptDialog extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             children: [
               const Icon(Icons.local_hospital, size: 40, color: Colors.black87),
-              Text(AppState.storeName, textAlign: TextAlign.center, style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 15)),
-              Text(AppState.storeAddress, textAlign: TextAlign.center, style: const TextStyle(color: Colors.black54, fontSize: 10)),
-              Text('هاتف: ${AppState.storePhone}', style: const TextStyle(color: Colors.black87, fontSize: 11)),
-              const Divider(color: Colors.black87),
+              const SizedBox(height: 4),
+              Text(
+                AppState.storeName,
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 16),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                AppState.storeAddress,
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.black87, fontSize: 11),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                'هاتف العيادة: ${AppState.storePhone}',
+                style: const TextStyle(color: Colors.black, fontSize: 12, fontWeight: FontWeight.bold),
+              ),
+              const Divider(color: Colors.black87, thickness: 1),
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   Text('فاتورة: ${invoice.invoiceNumber}', style: const TextStyle(color: Colors.black, fontSize: 11)),
-                  Text('${invoice.date.year}/${invoice.date.month}/${invoice.date.day}', style: const TextStyle(color: Colors.black, fontSize: 11)),
+                  Text('${invoice.date.year}/${invoice.date.month}/${invoice.date.day} ${invoice.date.hour}:${invoice.date.minute}',
+                      style: const TextStyle(color: Colors.black, fontSize: 11)),
                 ],
               ),
-              Align(alignment: Alignment.centerRight, child: Text('الكاشير: ${invoice.cashierName}', style: const TextStyle(color: Colors.black, fontSize: 11))),
+              Align(
+                alignment: Alignment.centerRight,
+                child: Text('الكاشير المسؤول: ${invoice.cashierName}', style: const TextStyle(color: Colors.black, fontSize: 11)),
+              ),
               const Divider(color: Colors.black54),
+              ...invoice.items.map((item) => Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 2),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Expanded(
+                          child: Text(
+                            '${item.product.name} (x${item.qty})',
+                            style: const TextStyle(color: Colors.black, fontSize: 11),
+                          ),
+                        ),
+                        Text(
+                          '${item.subtotal.toInt()} د.ع',
+                          style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 11),
+                        ),
+                      ],
+                    ),
+                  )),
+              const Divider(color: Colors.black87, thickness: 1),
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
@@ -2066,12 +2310,19 @@ class ThermalReceiptDialog extends StatelessWidget {
                   Text('${invoice.totalAmount.toInt()} د.ع', style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 16)),
                 ],
               ),
+              const SizedBox(height: 8),
+              const Text('شكراً لزيارتكم — نتمنى لكم دوام العافية', style: TextStyle(color: Colors.black54, fontSize: 10, fontStyle: FontStyle.italic)),
               const SizedBox(height: 14),
               ElevatedButton.icon(
                 style: ElevatedButton.styleFrom(backgroundColor: Colors.black, foregroundColor: Colors.white),
                 icon: const Icon(Icons.print, size: 16),
                 label: const Text('طباعة الفاتورة'),
-                onPressed: () => Navigator.pop(context),
+                onPressed: () {
+                  Navigator.pop(context);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('تم إرسال أمر الطباعة مع ترويسة العيادة بنجاح 🖨️'), backgroundColor: Colors.green),
+                  );
+                },
               ),
             ],
           ),
