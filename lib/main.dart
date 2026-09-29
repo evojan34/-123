@@ -1,6 +1,12 @@
+import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await AppStorage.loadData();
   runApp(const LuxuryClinicCashierApp());
 }
 
@@ -21,6 +27,20 @@ class AppUser {
     required this.fullName,
     required this.role,
   });
+
+  Map<String, dynamic> toJson() => {
+        'username': username,
+        'password': password,
+        'fullName': fullName,
+        'role': role == UserRole.admin ? 'admin' : 'cashier',
+      };
+
+  factory AppUser.fromJson(Map<String, dynamic> json) => AppUser(
+        username: json['username'],
+        password: json['password'],
+        fullName: json['fullName'],
+        role: json['role'] == 'admin' ? UserRole.admin : UserRole.cashier,
+      );
 }
 
 class Product {
@@ -30,7 +50,7 @@ class Product {
   int stock;
   final int minStock;
   final bool isService;
-  String imageUrl;
+  String imagePath; // مسار الصورة المحفوظة في ذاكرة الهاتف
 
   Product({
     required this.id,
@@ -39,8 +59,28 @@ class Product {
     this.stock = 0,
     this.minStock = 5,
     this.isService = false,
-    this.imageUrl = "",
+    this.imagePath = "",
   });
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'name': name,
+        'price': price,
+        'stock': stock,
+        'minStock': minStock,
+        'isService': isService,
+        'imagePath': imagePath,
+      };
+
+  factory Product.fromJson(Map<String, dynamic> json) => Product(
+        id: json['id'],
+        name: json['name'],
+        price: (json['price'] as num).toDouble(),
+        stock: json['stock'] ?? 0,
+        minStock: json['minStock'] ?? 5,
+        isService: json['isService'] ?? false,
+        imagePath: json['imagePath'] ?? '',
+      );
 }
 
 class CartItem {
@@ -70,6 +110,23 @@ class SaleInvoice {
     required this.cashierName,
     required this.cashierUsername,
   });
+
+  Map<String, dynamic> toJson() => {
+        'invoiceNumber': invoiceNumber,
+        'date': date.toIso8601String(),
+        'totalAmount': totalAmount,
+        'cashierName': cashierName,
+        'cashierUsername': cashierUsername,
+      };
+
+  factory SaleInvoice.fromJson(Map<String, dynamic> json) => SaleInvoice(
+        invoiceNumber: json['invoiceNumber'],
+        date: DateTime.parse(json['date']),
+        items: [],
+        totalAmount: (json['totalAmount'] as num).toDouble(),
+        cashierName: json['cashierName'],
+        cashierUsername: json['cashierUsername'] ?? 'general',
+      );
 }
 
 class PurchaseRecord {
@@ -90,10 +147,97 @@ class PurchaseRecord {
   });
 
   double get totalCost => qty * unitCost;
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'productName': productName,
+        'qty': qty,
+        'unitCost': unitCost,
+        'supplier': supplier,
+        'date': date.toIso8601String(),
+      };
+
+  factory PurchaseRecord.fromJson(Map<String, dynamic> json) => PurchaseRecord(
+        id: json['id'],
+        productName: json['productName'],
+        qty: json['qty'],
+        unitCost: (json['unitCost'] as num).toDouble(),
+        supplier: json['supplier'],
+        date: DateTime.parse(json['date']),
+      );
 }
 
 // -------------------------------------------------------------
-// الحالة العامة (State)
+// محرك التخزين الدائم
+// -------------------------------------------------------------
+class AppStorage {
+  static const String _usersKey = 'app_users_v4';
+  static const String _productsKey = 'app_products_v4';
+  static const String _salesKey = 'app_sales_v4';
+  static const String _purchasesKey = 'app_purchases_v4';
+  static const String _recoveryKey = 'app_recovery_v4';
+
+  static Future<void> loadData() async {
+    final prefs = await SharedPreferences.getInstance();
+
+    final usersRaw = prefs.getString(_usersKey);
+    if (usersRaw != null) {
+      final List decoded = jsonDecode(usersRaw);
+      AppState.users = decoded.map((i) => AppUser.fromJson(i)).toList();
+    }
+
+    final productsRaw = prefs.getString(_productsKey);
+    if (productsRaw != null) {
+      final List decoded = jsonDecode(productsRaw);
+      AppState.products = decoded.map((i) => Product.fromJson(i)).toList();
+    } else {
+      AppState.products = AppState.initialProducts;
+    }
+
+    final salesRaw = prefs.getString(_salesKey);
+    if (salesRaw != null) {
+      final List decoded = jsonDecode(salesRaw);
+      AppState.sales = decoded.map((i) => SaleInvoice.fromJson(i)).toList();
+    }
+
+    final purchasesRaw = prefs.getString(_purchasesKey);
+    if (purchasesRaw != null) {
+      final List decoded = jsonDecode(purchasesRaw);
+      AppState.purchases = decoded.map((i) => PurchaseRecord.fromJson(i)).toList();
+    }
+
+    AppState.recoverySecret = prefs.getString(_recoveryKey) ?? "123456";
+  }
+
+  static Future<void> saveUsers() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_usersKey, jsonEncode(AppState.users.map((u) => u.toJson()).toList()));
+  }
+
+  static Future<void> saveProducts() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_productsKey, jsonEncode(AppState.products.map((p) => p.toJson()).toList()));
+  }
+
+  static Future<void> saveSales() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_salesKey, jsonEncode(AppState.sales.map((s) => s.toJson()).toList()));
+  }
+
+  static Future<void> savePurchases() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_purchasesKey, jsonEncode(AppState.purchases.map((p) => p.toJson()).toList()));
+  }
+
+  static Future<void> saveRecoverySecret(String secret) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_recoveryKey, secret);
+    AppState.recoverySecret = secret;
+  }
+}
+
+// -------------------------------------------------------------
+// الحالة العامة
 // -------------------------------------------------------------
 class AppState {
   static String storeName = "عيادة ومستلزمات التمريض المتنقلة";
@@ -106,55 +250,22 @@ class AppState {
 
   static bool get hasAdmin => users.any((u) => u.role == UserRole.admin);
 
-  static List<Product> products = [
-    Product(
-      id: "1",
-      name: "محلول ملحي معقم (Saline 500ml)",
-      price: 3000,
-      stock: 25,
-      minStock: 5,
-      imageUrl: "https://images.unsplash.com/photo-1584515979956-d9f6e5d09982?w=300&q=80",
-    ),
-    Product(
-      id: "2",
-      name: "كانيولا وريدية قياس 20G وردي",
-      price: 1000,
-      stock: 30,
-      minStock: 10,
-      imageUrl: "https://images.unsplash.com/photo-1583912267670-6575ad362e5b?w=300&q=80",
-    ),
-    Product(
-      id: "3",
-      name: "شاش طبي وبلاستر معقم",
-      price: 2500,
-      stock: 20,
-      minStock: 5,
-      imageUrl: "https://images.unsplash.com/photo-1603398938378-e54eab446dde?w=300&q=80",
-    ),
-    Product(
-      id: "4",
-      name: "جهاز قياس ضغط إلكتروني",
-      price: 40000,
-      stock: 5,
-      minStock: 2,
-      imageUrl: "https://images.unsplash.com/photo-1631815588090-d4bfec5b1ccb?w=300&q=80",
-    ),
-    Product(
-      id: "5",
-      name: "خدمة: إعطاء مغذي وتثبيت كانيولا",
-      price: 15000,
-      isService: true,
-      imageUrl: "https://images.unsplash.com/photo-1579684385127-1ef15d508118?w=300&q=80",
-    ),
+  static List<Product> initialProducts = [
+    Product(id: "1", name: "محلول ملحي معقم (Saline 500ml)", price: 3000, stock: 25, minStock: 5),
+    Product(id: "2", name: "كانيولا وريدية قياس 20G وردي", price: 1000, stock: 30, minStock: 10),
+    Product(id: "3", name: "شاش طبي وبلاستر معقم", price: 2500, stock: 20, minStock: 5),
+    Product(id: "4", name: "جهاز ضغط إلكتروني", price: 40000, stock: 5, minStock: 2),
+    Product(id: "5", name: "خدمة: إعطاء مغذي وتثبيت كانيولا", price: 15000, isService: true),
   ];
 
+  static List<Product> products = [];
   static List<SaleInvoice> sales = [];
   static List<PurchaseRecord> purchases = [];
   static int invoiceCounter = 1001;
 }
 
 // -------------------------------------------------------------
-// التطبيق الرئيسي والثيم
+// التطبيق الرئيسي
 // -------------------------------------------------------------
 class LuxuryClinicCashierApp extends StatelessWidget {
   const LuxuryClinicCashierApp({super.key});
@@ -190,7 +301,32 @@ class LuxuryClinicCashierApp extends StatelessWidget {
 }
 
 // -------------------------------------------------------------
-// شاشة تأسيس حساب المدير العام لأول مرة
+// ويدجت مساعدة لعرض الصورة سواء من ملف الهاتف أو أيقونة بديلة
+// -------------------------------------------------------------
+Widget buildProductImage(Product product, {double size = 45}) {
+  if (product.imagePath.isNotEmpty && File(product.imagePath).existsSync()) {
+    return Image.file(
+      File(product.imagePath),
+      fit: BoxFit.cover,
+      errorBuilder: (_, __, ___) => _defaultIcon(product, size),
+    );
+  }
+  return _defaultIcon(product, size);
+}
+
+Widget _defaultIcon(Product product, double size) {
+  return Container(
+    color: Colors.white10,
+    child: Icon(
+      product.isService ? Icons.medical_services_outlined : Icons.medication,
+      size: size,
+      color: LuxuryClinicCashierApp.gold,
+    ),
+  );
+}
+
+// -------------------------------------------------------------
+// تأسيس حساب المدير العام لأول مرة
 // -------------------------------------------------------------
 class InitialAdminSetupScreen extends StatefulWidget {
   const InitialAdminSetupScreen({super.key});
@@ -207,7 +343,7 @@ class _InitialAdminSetupScreenState extends State<InitialAdminSetupScreen> {
   final TextEditingController _recoveryCtrl = TextEditingController();
   String? _error;
 
-  void _saveAdmin() {
+  void _saveAdmin() async {
     final name = _nameCtrl.text.trim();
     final user = _userCtrl.text.trim();
     final pass = _passCtrl.text.trim();
@@ -233,8 +369,11 @@ class _InitialAdminSetupScreenState extends State<InitialAdminSetupScreen> {
 
     AppState.users.add(admin);
     AppState.currentUser = admin;
-    AppState.recoverySecret = recovery;
 
+    await AppStorage.saveUsers();
+    await AppStorage.saveRecoverySecret(recovery);
+
+    if (!mounted) return;
     Navigator.pushReplacement(
       context,
       MaterialPageRoute(
@@ -263,7 +402,7 @@ class _InitialAdminSetupScreenState extends State<InitialAdminSetupScreen> {
                 const Icon(Icons.security, size: 60, color: LuxuryClinicCashierApp.gold),
                 const SizedBox(height: 12),
                 const Text('تأسيس حساب المدير العام', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: LuxuryClinicCashierApp.gold)),
-                const Text('قم بتعيين حسابك الرئيسي ورمز الاستعادة الاحتياطي', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                const Text('قم بتعيين حسابك الرئيسي ورمز استعادة كلمة المرور', style: TextStyle(fontSize: 12, color: Colors.grey)),
                 const SizedBox(height: 20),
                 TextField(controller: _nameCtrl, decoration: const InputDecoration(labelText: 'الاسم الكامل للمدير', prefixIcon: Icon(Icons.badge))),
                 const SizedBox(height: 12),
@@ -371,7 +510,7 @@ class _LoginScreenState extends State<LoginScreen> {
               TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('إلغاء')),
               ElevatedButton(
                 style: ElevatedButton.styleFrom(backgroundColor: LuxuryClinicCashierApp.gold, foregroundColor: Colors.black),
-                onPressed: () {
+                onPressed: () async {
                   final targetUser = userCtrl.text.trim();
                   final recoveryInput = recoveryCtrl.text.trim();
                   final newPassword = newPassCtrl.text.trim();
@@ -391,6 +530,9 @@ class _LoginScreenState extends State<LoginScreen> {
                   }
 
                   AppState.users[userIndex].password = newPassword;
+                  await AppStorage.saveUsers();
+
+                  if (!mounted) return;
                   Navigator.pop(ctx);
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(content: Text('تم استعادة وتحديث الرمز بنجاح!'), backgroundColor: Colors.green),
@@ -429,7 +571,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 const SizedBox(height: 24),
                 TextField(controller: _userCtrl, decoration: const InputDecoration(labelText: 'اسم المستخدم', prefixIcon: Icon(Icons.person, color: LuxuryClinicCashierApp.gold))),
                 const SizedBox(height: 14),
-                TextField(controller: _passCtrl, obscureText: true, decoration: const InputDecoration(labelText: 'الرمز السري', prefixIcon: Icon(Icons.lock, color: LuxuryClinicClinicAppColor.gold))),
+                TextField(controller: _passCtrl, obscureText: true, decoration: const InputDecoration(labelText: 'الرمز السري', prefixIcon: Icon(Icons.lock, color: LuxuryClinicCashierApp.gold))),
                 Align(
                   alignment: Alignment.centerLeft,
                   child: TextButton(
@@ -460,12 +602,8 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 }
 
-class LuxuryClinicClinicAppColor {
-  static const Color gold = Color(0xFFD4AF37);
-}
-
 // -------------------------------------------------------------
-// شاشة التنقل الرئيسية (5 أقسام كاملة بدون نقص)
+// شاشة التنقل الرئيسية (5 أقسام كاملة)
 // -------------------------------------------------------------
 class MainNavigationScreen extends StatefulWidget {
   const MainNavigationScreen({super.key});
@@ -533,6 +671,7 @@ class PosScreen extends StatefulWidget {
 class _PosScreenState extends State<PosScreen> {
   final List<CartItem> cart = [];
   String searchQuery = "";
+  final ImagePicker _picker = ImagePicker();
 
   double get cartTotal => cart.fold(0, (sum, item) => sum + item.subtotal);
 
@@ -549,7 +688,7 @@ class _PosScreenState extends State<PosScreen> {
       if (index >= 0) {
         if (!product.isService && cart[index].qty >= product.stock) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('الكمية تجاوزت المخزون (${product.stock})'), backgroundColor: Colors.orange),
+            SnackBar(content: Text('الكمية تجاوزت المخزون المتوفر (${product.stock})'), backgroundColor: Colors.orange),
           );
           return;
         }
@@ -560,11 +699,42 @@ class _PosScreenState extends State<PosScreen> {
     });
   }
 
+  // اختيار صورة من المعرض أو الكاميرا
+  Future<String?> _pickImageSource(BuildContext ctx) async {
+    ImageSource? source = await showModalBottomSheet<ImageSource>(
+      context: ctx,
+      backgroundColor: LuxuryClinicCashierApp.darkCard,
+      builder: (context) => SafeArea(
+        child: Wrap(
+          children: [
+            ListTile(
+              leading: const Icon(Icons.photo_library, color: LuxuryClinicCashierApp.gold),
+              title: const Text('اختيار من معرض صور الهاتف'),
+              onTap: () => Navigator.pop(context, ImageSource.gallery),
+            ),
+            ListTile(
+              leading: const Icon(Icons.camera_alt, color: LuxuryClinicCashierApp.gold),
+              title: const Text('التقاط صورة بالكاميرا الآن'),
+              onTap: () => Navigator.pop(context, ImageSource.camera),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (source != null) {
+      final XFile? image = await _picker.pickImage(source: source, imageQuality: 70);
+      return image?.path;
+    }
+    return null;
+  }
+
+  // إضافة مادة مباشرة لواجهة الكاشير مع زر اختيار صورة الجهاز
   void _addNewProductDirectly() {
     final nameCtrl = TextEditingController();
     final priceCtrl = TextEditingController();
     final stockCtrl = TextEditingController(text: "10");
-    final imgCtrl = TextEditingController();
+    String pickedImagePath = "";
     bool isService = false;
 
     showDialog(
@@ -579,11 +749,42 @@ class _PosScreenState extends State<PosScreen> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'اسم المادة')),
+                  // مربع معاينة واختيار صورة الهاتف
+                  InkWell(
+                    onTap: () async {
+                      final path = await _pickImageSource(ctx);
+                      if (path != null) {
+                        setDlg(() => pickedImagePath = path);
+                      }
+                    },
+                    borderRadius: BorderRadius.circular(12),
+                    child: Container(
+                      height: 110,
+                      width: double.infinity,
+                      decoration: BoxDecoration(
+                        color: Colors.white10,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: LuxuryClinicCashierApp.gold),
+                      ),
+                      child: pickedImagePath.isNotEmpty
+                          ? ClipRRect(
+                              borderRadius: BorderRadius.circular(12),
+                              child: Image.file(File(pickedImagePath), fit: BoxFit.cover),
+                            )
+                          : const Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(Icons.add_a_photo, color: LuxuryClinicCashierApp.gold, size: 36),
+                                SizedBox(height: 6),
+                                Text('اضغط لاختيار صورة من هاتفك', style: TextStyle(color: Colors.grey, fontSize: 12)),
+                              ],
+                            ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'اسم المادة أو الخدمة')),
                   const SizedBox(height: 8),
                   TextField(controller: priceCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'السعر (د.ع)')),
-                  const SizedBox(height: 8),
-                  TextField(controller: imgCtrl, decoration: const InputDecoration(labelText: 'رابط صورة المادة (URL)')),
                   const SizedBox(height: 8),
                   CheckboxListTile(
                     title: const Text('خدمة طبية؟ (بدون مخزون)', style: TextStyle(fontSize: 13)),
@@ -592,7 +793,7 @@ class _PosScreenState extends State<PosScreen> {
                     onChanged: (val) => setDlg(() => isService = val ?? false),
                   ),
                   if (!isService)
-                    TextField(controller: stockCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'الكمية الأولية بالمخزن')),
+                    TextField(controller: stockCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'الكمية المتوفرة بالمخزن')),
                 ],
               ),
             ),
@@ -600,7 +801,7 @@ class _PosScreenState extends State<PosScreen> {
               TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('إلغاء')),
               ElevatedButton(
                 style: ElevatedButton.styleFrom(backgroundColor: LuxuryClinicCashierApp.gold, foregroundColor: Colors.black),
-                onPressed: () {
+                onPressed: () async {
                   final name = nameCtrl.text.trim();
                   final price = double.tryParse(priceCtrl.text) ?? 0.0;
                   final stock = int.tryParse(stockCtrl.text) ?? 0;
@@ -612,7 +813,7 @@ class _PosScreenState extends State<PosScreen> {
                       price: price,
                       stock: stock,
                       isService: isService,
-                      imageUrl: imgCtrl.text.trim(),
+                      imagePath: pickedImagePath,
                     );
 
                     setState(() {
@@ -620,6 +821,8 @@ class _PosScreenState extends State<PosScreen> {
                       _addToCart(newProduct);
                     });
 
+                    await AppStorage.saveProducts();
+                    if (!mounted) return;
                     Navigator.pop(ctx);
                   }
                 },
@@ -632,54 +835,86 @@ class _PosScreenState extends State<PosScreen> {
     );
   }
 
-  void _editProductPrice(Product product) {
+  // تعديل السعر واختيار صورة جديدة من الجهاز للمادة
+  void _editProduct(Product product) {
     final priceCtrl = TextEditingController(text: product.price.toInt().toString());
-    final imgCtrl = TextEditingController(text: product.imageUrl);
+    String currentImagePath = product.imagePath;
 
     showDialog(
       context: context,
-      builder: (ctx) => Directionality(
-        textDirection: TextDirection.rtl,
-        child: AlertDialog(
-          backgroundColor: LuxuryClinicCashierApp.darkCard,
-          title: Text('تعديل سعر وصورة: ${product.name}', style: const TextStyle(color: LuxuryClinicCashierApp.gold, fontSize: 15)),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: priceCtrl,
-                keyboardType: TextInputType.number,
-                decoration: const InputDecoration(labelText: 'السعر الجديد (د.ع)'),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDlg) => Directionality(
+          textDirection: TextDirection.rtl,
+          child: AlertDialog(
+            backgroundColor: LuxuryClinicCashierApp.darkCard,
+            title: Text('تعديل سعر وصورة: ${product.name}', style: const TextStyle(color: LuxuryClinicCashierApp.gold, fontSize: 15)),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  InkWell(
+                    onTap: () async {
+                      final path = await _pickImageSource(ctx);
+                      if (path != null) {
+                        setDlg(() => currentImagePath = path);
+                      }
+                    },
+                    child: Container(
+                      height: 100,
+                      width: double.infinity,
+                      decoration: BoxDecoration(
+                        color: Colors.white10,
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: LuxuryClinicCashierApp.gold),
+                      ),
+                      child: currentImagePath.isNotEmpty && File(currentImagePath).existsSync()
+                          ? ClipRRect(
+                              borderRadius: BorderRadius.circular(10),
+                              child: Image.file(File(currentImagePath), fit: BoxFit.cover),
+                            )
+                          : const Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(Icons.image_search, color: LuxuryClinicCashierApp.gold, size: 30),
+                                Text('تغيير صورة المادة من الجهاز', style: TextStyle(fontSize: 11, color: Colors.grey)),
+                              ],
+                            ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: priceCtrl,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(labelText: 'السعر الجديد (د.ع)'),
+                  ),
+                ],
               ),
-              const SizedBox(height: 10),
-              TextField(
-                controller: imgCtrl,
-                decoration: const InputDecoration(labelText: 'تحديث رابط صورة المادة (URL)'),
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('إلغاء')),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: LuxuryClinicCashierApp.gold, foregroundColor: Colors.black),
+                onPressed: () async {
+                  final newPrice = double.tryParse(priceCtrl.text);
+                  if (newPrice != null && newPrice > 0) {
+                    setState(() {
+                      product.price = newPrice;
+                      product.imagePath = currentImagePath;
+                      for (var item in cart) {
+                        if (item.product.id == product.id) {
+                          item.customPrice = newPrice;
+                        }
+                      }
+                    });
+                    await AppStorage.saveProducts();
+                    if (!mounted) return;
+                    Navigator.pop(ctx);
+                  }
+                },
+                child: const Text('حفظ التعديل'),
               ),
             ],
           ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('إلغاء')),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(backgroundColor: LuxuryClinicCashierApp.gold, foregroundColor: Colors.black),
-              onPressed: () {
-                final newPrice = double.tryParse(priceCtrl.text);
-                if (newPrice != null && newPrice > 0) {
-                  setState(() {
-                    product.price = newPrice;
-                    product.imageUrl = imgCtrl.text.trim();
-                    for (var item in cart) {
-                      if (item.product.id == product.id) {
-                        item.customPrice = newPrice;
-                      }
-                    }
-                  });
-                  Navigator.pop(ctx);
-                }
-              },
-              child: const Text('حفظ التعديل'),
-            ),
-          ],
         ),
       ),
     );
@@ -719,7 +954,7 @@ class _PosScreenState extends State<PosScreen> {
     );
   }
 
-  void _completeSaleAndPrint() {
+  void _completeSaleAndPrint() async {
     if (cart.isEmpty) return;
 
     for (var cartItem in cart) {
@@ -741,6 +976,10 @@ class _PosScreenState extends State<PosScreen> {
       AppState.sales.insert(0, newInvoice);
     });
 
+    await AppStorage.saveSales();
+    await AppStorage.saveProducts();
+
+    if (!mounted) return;
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -828,28 +1067,12 @@ class _PosScreenState extends State<PosScreen> {
                             child: Stack(
                               fit: StackFit.expand,
                               children: [
-                                p.imageUrl.isNotEmpty
-                                    ? Image.network(
-                                        p.imageUrl,
-                                        fit: BoxFit.cover,
-                                        errorBuilder: (_, __, ___) => Container(
-                                          color: Colors.white10,
-                                          child: const Icon(Icons.medical_services_outlined, size: 36, color: Colors.grey),
-                                        ),
-                                      )
-                                    : Container(
-                                        color: Colors.white10,
-                                        child: Icon(
-                                          p.isService ? Icons.medical_services : Icons.medication,
-                                          size: 38,
-                                          color: LuxuryClinicCashierApp.gold,
-                                        ),
-                                      ),
+                                buildProductImage(p, size: 36),
                                 Positioned(
                                   top: 6,
                                   left: 6,
                                   child: InkWell(
-                                    onTap: () => _editProductPrice(p),
+                                    onTap: () => _editProduct(p),
                                     child: Container(
                                       padding: const EdgeInsets.all(5),
                                       decoration: BoxDecoration(
@@ -1020,11 +1243,42 @@ class InventoryScreen extends StatefulWidget {
 }
 
 class _InventoryScreenState extends State<InventoryScreen> {
+  final ImagePicker _picker = ImagePicker();
+
+  Future<String?> _pickImageSource(BuildContext ctx) async {
+    ImageSource? source = await showModalBottomSheet<ImageSource>(
+      context: ctx,
+      backgroundColor: LuxuryClinicCashierApp.darkCard,
+      builder: (context) => SafeArea(
+        child: Wrap(
+          children: [
+            ListTile(
+              leading: const Icon(Icons.photo_library, color: LuxuryClinicCashierApp.gold),
+              title: const Text('اختيار من معرض صور الهاتف'),
+              onTap: () => Navigator.pop(context, ImageSource.gallery),
+            ),
+            ListTile(
+              leading: const Icon(Icons.camera_alt, color: LuxuryClinicCashierApp.gold),
+              title: const Text('التقاط بالكاميرا'),
+              onTap: () => Navigator.pop(context, ImageSource.camera),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (source != null) {
+      final XFile? image = await _picker.pickImage(source: source, imageQuality: 70);
+      return image?.path;
+    }
+    return null;
+  }
+
   void _openProductDialog({Product? existing}) {
     final nameCtrl = TextEditingController(text: existing?.name ?? '');
     final priceCtrl = TextEditingController(text: existing != null ? existing.price.toInt().toString() : '');
     final stockCtrl = TextEditingController(text: existing != null ? existing.stock.toString() : '10');
-    final imgCtrl = TextEditingController(text: existing?.imageUrl ?? '');
+    String pickedImagePath = existing?.imagePath ?? '';
     bool isService = existing?.isService ?? false;
 
     showDialog(
@@ -1039,11 +1293,40 @@ class _InventoryScreenState extends State<InventoryScreen> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
+                  InkWell(
+                    onTap: () async {
+                      final path = await _pickImageSource(ctx);
+                      if (path != null) {
+                        setDlg(() => pickedImagePath = path);
+                      }
+                    },
+                    child: Container(
+                      height: 100,
+                      width: double.infinity,
+                      decoration: BoxDecoration(
+                        color: Colors.white10,
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: LuxuryClinicCashierApp.gold),
+                      ),
+                      child: pickedImagePath.isNotEmpty && File(pickedImagePath).existsSync()
+                          ? ClipRRect(
+                              borderRadius: BorderRadius.circular(10),
+                              child: Image.file(File(pickedImagePath), fit: BoxFit.cover),
+                            )
+                          : const Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(Icons.add_photo_alternate, color: LuxuryClinicCashierApp.gold, size: 30),
+                                SizedBox(height: 4),
+                                Text('اختر صورة من ذاكرة الهاتف', style: TextStyle(color: Colors.grey, fontSize: 11)),
+                              ],
+                            ),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
                   TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'اسم الصنف أو الخدمة')),
                   const SizedBox(height: 8),
                   TextField(controller: priceCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'السعر (د.ع)')),
-                  const SizedBox(height: 8),
-                  TextField(controller: imgCtrl, decoration: const InputDecoration(labelText: 'رابط صورة المادة (URL)')),
                   const SizedBox(height: 8),
                   CheckboxListTile(
                     title: const Text('هل هي خدمة طبية؟'),
@@ -1060,7 +1343,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
               TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('إلغاء')),
               ElevatedButton(
                 style: ElevatedButton.styleFrom(backgroundColor: LuxuryClinicCashierApp.gold, foregroundColor: Colors.black),
-                onPressed: () {
+                onPressed: () async {
                   final name = nameCtrl.text.trim();
                   final price = double.tryParse(priceCtrl.text) ?? 0.0;
                   final stock = int.tryParse(stockCtrl.text) ?? 0;
@@ -1071,7 +1354,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
                         existing.name = name;
                         existing.price = price;
                         existing.stock = stock;
-                        existing.imageUrl = imgCtrl.text.trim();
+                        existing.imagePath = pickedImagePath;
                       } else {
                         AppState.products.add(Product(
                           id: DateTime.now().millisecondsSinceEpoch.toString(),
@@ -1079,10 +1362,12 @@ class _InventoryScreenState extends State<InventoryScreen> {
                           price: price,
                           stock: stock,
                           isService: isService,
-                          imageUrl: imgCtrl.text.trim(),
+                          imagePath: pickedImagePath,
                         ));
                       }
                     });
+                    await AppStorage.saveProducts();
+                    if (!mounted) return;
                     Navigator.pop(ctx);
                   }
                 },
@@ -1125,13 +1410,10 @@ class _InventoryScreenState extends State<InventoryScreen> {
               children: [
                 ClipRRect(
                   borderRadius: BorderRadius.circular(8),
-                  child: Container(
+                  child: SizedBox(
                     width: 50,
                     height: 50,
-                    color: Colors.white10,
-                    child: p.imageUrl.isNotEmpty
-                        ? Image.network(p.imageUrl, fit: BoxFit.cover, errorBuilder: (_, __, ___) => const Icon(Icons.broken_image))
-                        : Icon(p.isService ? Icons.medical_services : Icons.medication, color: LuxuryClinicCashierApp.gold),
+                    child: buildProductImage(p, size: 28),
                   ),
                 ),
                 const SizedBox(width: 12),
@@ -1150,8 +1432,9 @@ class _InventoryScreenState extends State<InventoryScreen> {
                 IconButton(icon: const Icon(Icons.edit, color: Colors.grey), onPressed: () => _openProductDialog(existing: p)),
                 IconButton(
                   icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
-                  onPressed: () {
+                  onPressed: () async {
                     setState(() => AppState.products.removeAt(i));
+                    await AppStorage.saveProducts();
                   },
                 ),
               ],
@@ -1164,7 +1447,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
 }
 
 // -------------------------------------------------------------
-// 3. شاشة المشتريات
+// 3. شاشة المشتريات والموردين
 // -------------------------------------------------------------
 class PurchasesScreen extends StatefulWidget {
   const PurchasesScreen({super.key});
@@ -1214,7 +1497,7 @@ class _PurchasesScreenState extends State<PurchasesScreen> {
               TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('إلغاء')),
               ElevatedButton(
                 style: ElevatedButton.styleFrom(backgroundColor: LuxuryClinicCashierApp.gold, foregroundColor: Colors.black),
-                onPressed: () {
+                onPressed: () async {
                   if (selectedProduct == null) return;
                   final qty = int.tryParse(qtyCtrl.text) ?? 0;
                   final cost = double.tryParse(costCtrl.text) ?? 0.0;
@@ -1235,6 +1518,9 @@ class _PurchasesScreenState extends State<PurchasesScreen> {
                         ),
                       );
                     });
+                    await AppStorage.savePurchases();
+                    await AppStorage.saveProducts();
+                    if (!mounted) return;
                     Navigator.pop(ctx);
                   }
                 },
@@ -1655,7 +1941,7 @@ class _UsersManagementScreenState extends State<UsersManagementScreen> {
               TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('إلغاء')),
               ElevatedButton(
                 style: ElevatedButton.styleFrom(backgroundColor: LuxuryClinicCashierApp.gold, foregroundColor: Colors.black),
-                onPressed: () {
+                onPressed: () async {
                   final name = nameCtrl.text.trim();
                   final user = userCtrl.text.trim();
                   final pass = passCtrl.text.trim();
@@ -1676,6 +1962,8 @@ class _UsersManagementScreenState extends State<UsersManagementScreen> {
                     }
                   });
 
+                  await AppStorage.saveUsers();
+                  if (!mounted) return;
                   Navigator.pop(ctx);
                 },
                 child: Text(isEditing ? 'حفظ' : 'إضافة'),
@@ -1722,8 +2010,9 @@ class _UsersManagementScreenState extends State<UsersManagementScreen> {
                   if (!isCurrentUser)
                     IconButton(
                       icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
-                      onPressed: () {
+                      onPressed: () async {
                         setState(() => AppState.users.removeAt(i));
+                        await AppStorage.saveUsers();
                       },
                     ),
                 ],
@@ -1737,7 +2026,7 @@ class _UsersManagementScreenState extends State<UsersManagementScreen> {
 }
 
 // -------------------------------------------------------------
-// حوار وطباعة الفاتورة الحرارية
+// حوار وطباعة الفاتورة
 // -------------------------------------------------------------
 class ThermalReceiptDialog extends StatelessWidget {
   final SaleInvoice invoice;
