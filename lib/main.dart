@@ -208,7 +208,7 @@ class PurchaseRecord {
 }
 
 // -------------------------------------------------------------
-// شاشة قارئ الباركود بالكاميرا
+// شاشة قارئ الباركود
 // -------------------------------------------------------------
 class BarcodeScannerScreen extends StatefulWidget {
   final String title;
@@ -284,10 +284,9 @@ class _BarcodeScannerScreenState extends State<BarcodeScannerScreen> {
 }
 
 // -------------------------------------------------------------
-// محرك الطباعة الشامل لطابعة Xprinter (USB OTG + Network)
+// محرك تحويل الفاتورة لأوامر ESC/POS متوافقة مع Xprinter
 // -------------------------------------------------------------
 class XprinterHelper {
-  // تحويل الفاتورة إلى أوامر ESC/POS نقطية مع أمر قص الورق
   static Future<List<int>> convertImageToEscPos(ui.Image image) async {
     final ByteData? data = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
     if (data == null) return [];
@@ -298,8 +297,8 @@ class XprinterHelper {
     List<int> bytes = [];
 
     bytes.addAll([0x1B, 0x40]); // تهيئة الطابعة
-    bytes.addAll([0x1B, 0x61, 0x01]); // توسيط
-    bytes.addAll([0x1D, 0x76, 0x30, 0x00]); // رسم نقطي
+    bytes.addAll([0x1B, 0x61, 0x01]); // محاذاة في المنتصف
+    bytes.addAll([0x1D, 0x76, 0x30, 0x00]); // صورة نقطية
     bytes.add(widthBytes % 256);
     bytes.add(widthBytes ~/ 256);
     bytes.add(height % 256);
@@ -344,7 +343,7 @@ class XprinterHelper {
       await subscription.cancel();
 
       if (devices.isEmpty) {
-        return "لم يتم العثور على طابعة USB. يرجى توصيل كيبل الـ USB عبر تحويلة OTG وتشغيل الطابعة.";
+        return "لم يتم العثور على طابعة USB. يرجى توصيل كيبل USB عبر OTG وتشغيل الطابعة.";
       }
 
       final target = devices.first;
@@ -358,7 +357,7 @@ class XprinterHelper {
       );
 
       if (!connected) {
-        return "تعذر فتح اتصال USB. يرجى الضغط على (موافق/سماح) عند ظهور نافذة إذن الـ USB في هاتفك.";
+        return "تعذر فتح اتصال USB. يرجى الضغط على سماح/موافق لإذن الـ USB على الهاتف.";
       }
 
       await PrinterManager.instance.send(type: PrinterType.usb, bytes: bytes);
@@ -379,7 +378,7 @@ class XprinterHelper {
       await socket.close();
       return null;
     } catch (e) {
-      return "تعذر الاتصال بالطابعة على الآيبي ($ip). تأكد من توصيل الكيبل وتطابق الشبكة.";
+      return "تعذر الاتصال بالطابعة على الآيبي ($ip). تأكد من توصيل الكيبل بالراوتر.";
     }
   }
 }
@@ -388,11 +387,11 @@ class XprinterHelper {
 // التخزين الدائم
 // -------------------------------------------------------------
 class AppStorage {
-  static const String _usersKey = 'app_users_v14';
-  static const String _productsKey = 'app_products_v14';
-  static const String _salesKey = 'app_sales_v14';
-  static const String _purchasesKey = 'app_purchases_v14';
-  static const String _recoveryKey = 'app_recovery_v14';
+  static const String _usersKey = 'app_users_v15';
+  static const String _productsKey = 'app_products_v15';
+  static const String _salesKey = 'app_sales_v15';
+  static const String _purchasesKey = 'app_purchases_v15';
+  static const String _recoveryKey = 'app_recovery_v15';
   static const String _storeNameKey = 'app_store_name';
   static const String _storePhoneKey = 'app_store_phone';
   static const String _storeAddressKey = 'app_store_address';
@@ -863,7 +862,7 @@ class _LoginScreenState extends State<LoginScreen> {
 }
 
 // -------------------------------------------------------------
-// شاشة الضبط وإعدادات العيادة واختيار طريقة الطباعة
+// شاشة الضبط والبروفايل وإعدادات الطباعة
 // -------------------------------------------------------------
 class ProfileSettingsScreen extends StatefulWidget {
   const ProfileSettingsScreen({super.key});
@@ -1005,7 +1004,7 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
                   const SizedBox(height: 8),
                   RadioListTile<String>(
                     title: const Text('كيبل USB مباشر (تحويلة OTG للهاتف)'),
-                    subtitle: const Text('صل كيبل USB من الطابعة للهاتف مباشرة عبر OTG دون الحاجة لراوتر أو إنترنت', style: TextStyle(fontSize: 11, color: Colors.grey)),
+                    subtitle: const Text('صل كيبل USB من الطابعة للهاتف عبر تحويلة OTG بدون راوتر أو إنترنت', style: TextStyle(fontSize: 11, color: Colors.grey)),
                     value: "usb",
                     groupValue: _printerMode,
                     activeColor: LuxuryClinicCashierApp.gold,
@@ -2877,10 +2876,8 @@ class _ThermalReceiptDialogState extends State<ThermalReceiptDialog> {
 
       String? error;
       if (AppState.printerMode == "usb") {
-        // الطباعة عبر كيبل USB OTG
         error = await XprinterHelper.printViaUsb(bytes);
       } else {
-        // الطباعة عبر كيبل الشبكة
         error = await XprinterHelper.printViaNetwork(
           ip: AppState.printerIp,
           bytes: bytes,
