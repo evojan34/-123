@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter_pos_printer_platform/flutter_pos_printer_platform.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -283,9 +284,10 @@ class _BarcodeScannerScreenState extends State<BarcodeScannerScreen> {
 }
 
 // -------------------------------------------------------------
-// محرك تحويل الفاتورة لأوامر ESC/POS متوافقة مع Xprinter
+// محرك الطباعة الشامل لطابعة Xprinter (USB OTG + Network)
 // -------------------------------------------------------------
 class XprinterHelper {
+  // تحويل الفاتورة إلى أوامر ESC/POS نقطية مع أمر قص الورق
   static Future<List<int>> convertImageToEscPos(ui.Image image) async {
     final ByteData? data = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
     if (data == null) return [];
@@ -295,9 +297,9 @@ class XprinterHelper {
     final int widthBytes = (width + 7) ~/ 8;
     List<int> bytes = [];
 
-    bytes.addAll([0x1B, 0x40]); // تهيئة
-    bytes.addAll([0x1B, 0x61, 0x01]); // محاذاة في المنتصف
-    bytes.addAll([0x1D, 0x76, 0x30, 0x00]); // صورة نقطية
+    bytes.addAll([0x1B, 0x40]); // تهيئة الطابعة
+    bytes.addAll([0x1B, 0x61, 0x01]); // توسيط
+    bytes.addAll([0x1D, 0x76, 0x30, 0x00]); // رسم نقطي
     bytes.add(widthBytes % 256);
     bytes.add(widthBytes ~/ 256);
     bytes.add(height % 256);
@@ -330,19 +332,54 @@ class XprinterHelper {
     return bytes;
   }
 
-  static Future<bool> printViaNetwork({
-    required String ip,
-    required List<int> bytes,
-    int port = 9100,
-  }) async {
+  // 1. الطباعة عبر كيبل USB (تحويلة OTG)
+  static Future<String?> printViaUsb(List<int> bytes) async {
+    try {
+      List<PrinterDevice> devices = [];
+      final subscription = PrinterManager.instance.discovery(type: PrinterType.usb).listen((d) {
+        devices.add(d);
+      });
+
+      await Future.delayed(const Duration(milliseconds: 600));
+      await subscription.cancel();
+
+      if (devices.isEmpty) {
+        return "لم يتم العثور على طابعة USB. يرجى توصيل كيبل الـ USB عبر تحويلة OTG وتشغيل الطابعة.";
+      }
+
+      final target = devices.first;
+      final connected = await PrinterManager.instance.connect(
+        type: PrinterType.usb,
+        model: UsbPrinterInput(
+          name: target.name,
+          vendorId: target.vendorId,
+          productId: target.productId,
+        ),
+      );
+
+      if (!connected) {
+        return "تعذر فتح اتصال USB. يرجى الضغط على (موافق/سماح) عند ظهور نافذة إذن الـ USB في هاتفك.";
+      }
+
+      await PrinterManager.instance.send(type: PrinterType.usb, bytes: bytes);
+      await Future.delayed(const Duration(milliseconds: 250));
+      await PrinterManager.instance.disconnect(type: PrinterType.usb);
+      return null;
+    } catch (e) {
+      return "خطأ أثناء إرسال البيانات عبر USB: $e";
+    }
+  }
+
+  // 2. الطباعة عبر كيبل الشبكة (LAN IP)
+  static Future<String?> printViaNetwork({required String ip, required List<int> bytes, int port = 9100}) async {
     try {
       final socket = await Socket.connect(ip, port, timeout: const Duration(seconds: 4));
       socket.add(bytes);
       await socket.flush();
       await socket.close();
-      return true;
+      return null;
     } catch (e) {
-      return false;
+      return "تعذر الاتصال بالطابعة على الآيبي ($ip). تأكد من توصيل الكيبل وتطابق الشبكة.";
     }
   }
 }
@@ -351,16 +388,17 @@ class XprinterHelper {
 // التخزين الدائم
 // -------------------------------------------------------------
 class AppStorage {
-  static const String _usersKey = 'app_users_v13';
-  static const String _productsKey = 'app_products_v13';
-  static const String _salesKey = 'app_sales_v13';
-  static const String _purchasesKey = 'app_purchases_v13';
-  static const String _recoveryKey = 'app_recovery_v13';
+  static const String _usersKey = 'app_users_v14';
+  static const String _productsKey = 'app_products_v14';
+  static const String _salesKey = 'app_sales_v14';
+  static const String _purchasesKey = 'app_purchases_v14';
+  static const String _recoveryKey = 'app_recovery_v14';
   static const String _storeNameKey = 'app_store_name';
   static const String _storePhoneKey = 'app_store_phone';
   static const String _storeAddressKey = 'app_store_address';
   static const String _receiptFooterKey = 'app_receipt_footer';
   static const String _printerIpKey = 'app_printer_ip';
+  static const String _printerModeKey = 'app_printer_mode';
 
   static Future<void> loadData() async {
     final prefs = await SharedPreferences.getInstance();
@@ -397,6 +435,7 @@ class AppStorage {
     AppState.storeAddress = prefs.getString(_storeAddressKey) ?? "العراق - الرعاية السريرية والمنزلية";
     AppState.receiptFooterNote = prefs.getString(_receiptFooterKey) ?? "شكراً لزيارتكم — نتمنى لكم دوام الصحة والعافية 🌸";
     AppState.printerIp = prefs.getString(_printerIpKey) ?? "192.168.1.100";
+    AppState.printerMode = prefs.getString(_printerModeKey) ?? "usb";
   }
 
   static Future<void> saveUsers() async {
@@ -431,6 +470,7 @@ class AppStorage {
     required String address,
     required String footer,
     required String printerIp,
+    required String printerMode,
   }) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_storeNameKey, name);
@@ -438,12 +478,14 @@ class AppStorage {
     await prefs.setString(_storeAddressKey, address);
     await prefs.setString(_receiptFooterKey, footer);
     await prefs.setString(_printerIpKey, printerIp);
+    await prefs.setString(_printerModeKey, printerMode);
 
     AppState.storeName = name;
     AppState.storePhone = phone;
     AppState.storeAddress = address;
     AppState.receiptFooterNote = footer;
     AppState.printerIp = printerIp;
+    AppState.printerMode = printerMode;
   }
 }
 
@@ -456,6 +498,7 @@ class AppState {
   static String storeAddress = "العراق - الرعاية السريرية والمنزلية";
   static String receiptFooterNote = "شكراً لزيارتكم — نتمنى لكم دوام الصحة والعافية 🌸";
   static String printerIp = "192.168.1.100";
+  static String printerMode = "usb"; // "usb" أو "network"
 
   static AppUser? currentUser;
   static List<AppUser> users = [];
@@ -820,7 +863,7 @@ class _LoginScreenState extends State<LoginScreen> {
 }
 
 // -------------------------------------------------------------
-// شاشة الضبط والبروفايل وإعدادات Xprinter
+// شاشة الضبط وإعدادات العيادة واختيار طريقة الطباعة
 // -------------------------------------------------------------
 class ProfileSettingsScreen extends StatefulWidget {
   const ProfileSettingsScreen({super.key});
@@ -841,6 +884,8 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
   late TextEditingController _footerNoteCtrl;
   late TextEditingController _printerIpCtrl;
 
+  String _printerMode = AppState.printerMode;
+
   @override
   void initState() {
     super.initState();
@@ -855,6 +900,7 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
     _clinicAddressCtrl = TextEditingController(text: AppState.storeAddress);
     _footerNoteCtrl = TextEditingController(text: AppState.receiptFooterNote);
     _printerIpCtrl = TextEditingController(text: AppState.printerIp);
+    _printerMode = AppState.printerMode;
   }
 
   void _saveSettings() async {
@@ -876,12 +922,13 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
         address: _clinicAddressCtrl.text.trim(),
         footer: _footerNoteCtrl.text.trim(),
         printerIp: _printerIpCtrl.text.trim(),
+        printerMode: _printerMode,
       );
     }
 
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('تم حفظ الإعدادات بنجاح!'), backgroundColor: Colors.green),
+      const SnackBar(content: Text('تم حفظ الإعدادات وطريقة الطباعة بنجاح!'), backgroundColor: Colors.green),
     );
     setState(() {});
   }
@@ -951,20 +998,39 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
                 ],
               ),
               _buildSection(
-                title: 'إعدادات طابعة الإيصالات (Xprinter 80mm)',
+                title: 'إعدادات طابعة الإيصالات (Xprinter)',
                 icon: Icons.print,
                 children: [
-                  TextField(
-                    controller: _printerIpCtrl,
-                    keyboardType: TextInputType.datetime,
-                    decoration: const InputDecoration(
-                      labelText: 'عنوان IP الخاص بالطابعة في الشبكة (LAN IP)',
-                      hintText: '192.168.1.100',
-                      prefixIcon: Icon(Icons.lan, color: LuxuryClinicCashierApp.gold),
-                    ),
+                  const Text('اختر طريقة اتصال الطابعة بالهاتف:', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: LuxuryClinicCashierApp.gold)),
+                  const SizedBox(height: 8),
+                  RadioListTile<String>(
+                    title: const Text('كيبل USB مباشر (تحويلة OTG للهاتف)'),
+                    subtitle: const Text('صل كيبل USB من الطابعة للهاتف مباشرة عبر OTG دون الحاجة لراوتر أو إنترنت', style: TextStyle(fontSize: 11, color: Colors.grey)),
+                    value: "usb",
+                    groupValue: _printerMode,
+                    activeColor: LuxuryClinicCashierApp.gold,
+                    onChanged: (val) => setState(() => _printerMode = val!),
                   ),
-                  const SizedBox(height: 6),
-                  const Text('اربط طابعة Xprinter بكيبل الشبكة بالراوتر، ثم اكتب الآيبي الخاص بها هنا ليتم إرسال الفواتير وقص الورق فورياً.', style: TextStyle(fontSize: 11, color: Colors.grey)),
+                  RadioListTile<String>(
+                    title: const Text('عبر شبكة الراوتر (LAN / Ethernet)'),
+                    subtitle: const Text('الطباعة عبر كيبل الشبكة والراوتر بكتابة عنوان IP', style: TextStyle(fontSize: 11, color: Colors.grey)),
+                    value: "network",
+                    groupValue: _printerMode,
+                    activeColor: LuxuryClinicCashierApp.gold,
+                    onChanged: (val) => setState(() => _printerMode = val!),
+                  ),
+                  if (_printerMode == "network") ...[
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: _printerIpCtrl,
+                      keyboardType: TextInputType.datetime,
+                      decoration: const InputDecoration(
+                        labelText: 'عنوان IP الخاص بالطابعة في الشبكة',
+                        hintText: '192.168.1.100',
+                        prefixIcon: Icon(Icons.lan, color: LuxuryClinicCashierApp.gold),
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ],
@@ -1516,7 +1582,7 @@ class _PosScreenState extends State<PosScreen> {
             ElevatedButton.icon(
               style: ElevatedButton.styleFrom(backgroundColor: Colors.black, foregroundColor: Colors.white),
               icon: const Icon(Icons.print, size: 18),
-              label: const Text('تأكيد وطباعة Xprinter'),
+              label: Text('تأكيد وطباعة (${AppState.printerMode == "usb" ? "USB" : "شبكة"})'),
               onPressed: () async {
                 for (var cartItem in cart) {
                   if (!cartItem.product.isService) {
@@ -2784,7 +2850,7 @@ class _UsersManagementScreenState extends State<UsersManagementScreen> {
 }
 
 // -------------------------------------------------------------
-// حوار وطباعة الفاتورة الحرارية (Xprinter 80mm)
+// حوار وطباعة الفاتورة الحرارية عبر USB أو الشبكة
 // -------------------------------------------------------------
 class ThermalReceiptDialog extends StatefulWidget {
   final SaleInvoice invoice;
@@ -2799,7 +2865,7 @@ class _ThermalReceiptDialogState extends State<ThermalReceiptDialog> {
   final GlobalKey _receiptKey = GlobalKey();
   bool _isPrinting = false;
 
-  Future<void> _printDirectToXprinter() async {
+  Future<void> _handlePrint() async {
     setState(() => _isPrinting = true);
 
     try {
@@ -2809,27 +2875,34 @@ class _ThermalReceiptDialogState extends State<ThermalReceiptDialog> {
       ui.Image image = await boundary.toImage(pixelRatio: 2.0);
       List<int> bytes = await XprinterHelper.convertImageToEscPos(image);
 
-      bool success = await XprinterHelper.printViaNetwork(
-        ip: AppState.printerIp,
-        bytes: bytes,
-        port: 9100,
-      );
+      String? error;
+      if (AppState.printerMode == "usb") {
+        // الطباعة عبر كيبل USB OTG
+        error = await XprinterHelper.printViaUsb(bytes);
+      } else {
+        // الطباعة عبر كيبل الشبكة
+        error = await XprinterHelper.printViaNetwork(
+          ip: AppState.printerIp,
+          bytes: bytes,
+          port: 9100,
+        );
+      }
 
       if (!mounted) return;
       setState(() => _isPrinting = false);
 
-      if (success) {
+      if (error == null) {
         Navigator.pop(context);
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('تمت الطباعة وقص الورق عبر طابعة Xprinter بنجاح 🖨️'),
+          SnackBar(
+            content: Text('تمت الطباعة وقص الورق بنجاح عبر (${AppState.printerMode == "usb" ? "كيبل USB" : "الشبكة"}) 🖨️'),
             backgroundColor: Colors.green,
           ),
         );
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('تعذر الاتصال بالطابعة على الآيبي (${AppState.printerIp})، تأكد من ربط الكيبل وتحديث الآيبي في الضبط.'),
+            content: Text(error),
             backgroundColor: Colors.redAccent,
             duration: const Duration(seconds: 4),
           ),
@@ -2839,13 +2912,15 @@ class _ThermalReceiptDialogState extends State<ThermalReceiptDialog> {
       if (!mounted) return;
       setState(() => _isPrinting = false);
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('حدث خطأ أثناء الطباعة: $e'), backgroundColor: Colors.redAccent),
+        SnackBar(content: Text('حدث خطأ: $e'), backgroundColor: Colors.redAccent),
       );
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final bool isUsb = AppState.printerMode == "usb";
+
     return Dialog(
       backgroundColor: Colors.white,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
@@ -2856,6 +2931,25 @@ class _ThermalReceiptDialogState extends State<ThermalReceiptDialog> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: isUsb ? Colors.blue.shade50 : Colors.green.shade50,
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(isUsb ? Icons.usb : Icons.lan, size: 14, color: isUsb ? Colors.blue : Colors.green),
+                    const SizedBox(width: 4),
+                    Text(
+                      isUsb ? 'وضع الطباعة: كيبل USB (OTG)' : 'وضع الطباعة: عبر الشبكة (${AppState.printerIp})',
+                      style: TextStyle(fontSize: 10, color: isUsb ? Colors.blue.shade900 : Colors.green.shade900, fontWeight: FontWeight.bold),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 6),
               RepaintBoundary(
                 key: _receiptKey,
                 child: Container(
@@ -2935,9 +3029,9 @@ class _ThermalReceiptDialogState extends State<ThermalReceiptDialog> {
                 style: ElevatedButton.styleFrom(backgroundColor: Colors.black, foregroundColor: Colors.white, minimumSize: const Size.fromHeight(44)),
                 icon: _isPrinting
                     ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
-                    : const Icon(Icons.print, size: 18),
-                label: Text(_isPrinting ? 'جاري إرسال الأمر للطابعة...' : 'طباعة مباشرة على Xprinter'),
-                onPressed: _isPrinting ? null : _printDirectToXprinter,
+                    : Icon(isUsb ? Icons.usb : Icons.print, size: 18),
+                label: Text(_isPrinting ? 'جاري إرسال البيانات...' : 'طباعة الفاتورة (${isUsb ? "عبر كيبل USB" : "عبر الشبكة"})'),
+                onPressed: _isPrinting ? null : _handlePrint,
               ),
               const SizedBox(height: 6),
               TextButton(
