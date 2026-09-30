@@ -11,6 +11,7 @@ dependencies:
   flutter:
     sdk: flutter
   mobile_scanner: ^5.1.1
+  flutter_pos_printer_platform: ^1.1.0
   image_picker: ^1.0.7
   shared_preferences: ^2.2.2
   cupertino_icons: ^1.0.6
