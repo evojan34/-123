@@ -31,23 +31,23 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
-      - name: Configure Android Project & Fix Kotlin & SDK
+      - name: Configure Android Project & Fix Permissions & SDK
         run: |
-          # 1. إنشاء مجلد الأندرويد باسم حزمة صالح
           if [ ! -d "android" ]; then
             flutter create . --project-name clinic_cashier_app --platforms android
           fi
 
-          # 2. ترقية minSdkVersion إلى 21 لتشغيل قارئ الباركود
+          # رفع الحد الأدنى لنظام أندرويد إلى 21
           sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 21/g' android/app/build.gradle || true
           sed -i 's/minSdkVersion = flutter.minSdkVersion/minSdkVersion = 21/g' android/app/build.gradle || true
           sed -i 's/minSdkVersion [0-9]*/minSdkVersion 21/g' android/app/build.gradle || true
           sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 21/g' android/app/build.gradle || true
 
-          # 3. حل مشكلة كوتلن 1.3.50 وترقيتها في كافة الحزم إلى 1.8.22
-          find $HOME/.pub-cache -name "*.gradle" -exec sed -i 's/1.3.50/1.8.22/g' {} + || true
+          # إضافة صلاحيات USB Host و OTG
+          sed -i '/<manifest/a <uses-feature android:name="android.hardware.usb.host" android:required="false" \/>\n<uses-permission android:name="android.permission.USB_PERMISSION" \/>' android/app/src/main/AndroidManifest.xml || true
 
-          # 4. تفعيل توافق المكتبات القديمة مع أندرويد الحديث
+          # تصحيح توافق كوتلن
+          find $HOME/.pub-cache -name "*.gradle" -exec sed -i 's/1.3.50/1.8.22/g' {} + || true
           echo "android.useAndroidX=true" >> android/gradle.properties
           echo "android.enableJetifier=true" >> android/gradle.properties
 
